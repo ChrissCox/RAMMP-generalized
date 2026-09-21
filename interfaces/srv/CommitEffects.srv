@@ -1,0 +1,10 @@
+string operation_id
+string task_id
+uint64 execution_epoch
+uint64 base_revision
+rammp_adl_interfaces/FactEffect[] effects
+---
+bool committed
+uint64 assigned_revision
+string receipt_id
+string error_code

@@ -1,0 +1,10 @@
+std_msgs/Header header
+string snapshot_id
+uint64 revision
+uint64 collision_revision
+string base_epoch
+string calibration_id
+string robot_config_id
+string attachment_id
+string grasp_state_id
+string context_json

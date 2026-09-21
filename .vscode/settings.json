@@ -1,0 +1,24 @@
+{
+    "cmake.sourceDirectory": "/home/abra/RAMMP-generalized/interfaces",
+    "ROS2.distro": "humble",
+    "python.autoComplete.extraPaths": [
+        "/home/abra/ros2_ws/build/kinova_xbox_teleop",
+        "/home/abra/ros2_ws/install/kinova_xbox_teleop/lib/python3.10/site-packages",
+        "/home/abra/ros2_ws/install/rammp_common_interfaces/local/lib/python3.10/dist-packages",
+        "/home/abra/ros2_ws/install/rammp_arm_interfaces/local/lib/python3.10/dist-packages",
+        "/home/abra/ros2_ws/build/fridge_peering_task",
+        "/home/abra/ros2_ws/install/fridge_peering_task/lib/python3.10/site-packages",
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ],
+    "python.analysis.extraPaths": [
+        "/home/abra/ros2_ws/build/kinova_xbox_teleop",
+        "/home/abra/ros2_ws/install/kinova_xbox_teleop/lib/python3.10/site-packages",
+        "/home/abra/ros2_ws/install/rammp_common_interfaces/local/lib/python3.10/dist-packages",
+        "/home/abra/ros2_ws/install/rammp_arm_interfaces/local/lib/python3.10/dist-packages",
+        "/home/abra/ros2_ws/build/fridge_peering_task",
+        "/home/abra/ros2_ws/install/fridge_peering_task/lib/python3.10/site-packages",
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ]
+}

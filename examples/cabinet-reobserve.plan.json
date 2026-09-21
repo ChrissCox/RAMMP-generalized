@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0.0",
+  "skill_library_hash": "sha256:0788fb8be77edf9062ae273a230cdd2658459fd59f9e7c9081cdb12f6ca49568",
+  "task_id": "open-cabinet",
+  "snapshot_id": "cabinet-snapshot-2",
+  "execution_epoch": 2,
+  "nodes": [
+    {
+      "id": "r1",
+      "skill": "observe",
+      "args": {
+        "entity_id": "cabinet_handle_1",
+        "camera": "scene",
+        "purpose": "articulation"
+      }
+    }
+  ],
+  "edges": []
+}

@@ -1,0 +1,22 @@
+{
+  "provider": "openai",
+  "api": "responses",
+  "model": "gpt-6-astra",
+  "reasoning_effort": "low",
+  "fast_reasoning_effort": "low",
+  "api_key_env": "OPENAI_API_KEY",
+  "store": false,
+  "request_timeout_s": 45,
+  "event_deadline_s": 90,
+  "max_transport_retries": 1,
+  "max_plan_regenerations": 1,
+  "max_task_replans": 3,
+  "max_requests_per_task": 12,
+  "max_output_tokens": 8192,
+  "fast_max_output_tokens": 2000,
+  "max_input_text_tokens": 12000,
+  "max_images": 2,
+  "max_image_long_edge_px": 640,
+  "max_image_bytes": 200000,
+  "allow_face_images": false
+}

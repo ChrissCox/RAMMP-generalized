@@ -1,0 +1,6 @@
+string request_id
+string reason_code
+---
+# Accepted means stop requested; observe SafetyStatus for verified held/fault state.
+bool accepted
+uint64 execution_epoch

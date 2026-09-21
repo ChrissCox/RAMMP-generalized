@@ -1,0 +1,12 @@
+string entity_id
+uint64 entity_revision
+string pose_role
+geometry_msgs/PoseWithCovarianceStamped pose
+bool orientation_valid
+string snapshot_id
+string calibration_id
+string base_epoch
+string robot_config_id
+string attachment_id
+string grasp_state_id
+builtin_interfaces/Time valid_until

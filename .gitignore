@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.audit-backups/
+.env
+.env.*
+!.env.example
+.venv/
+*.egg-info/
+build/
+dist/
+install/
+log/
+artifacts/
+.pytest_cache/
+.vscode/browse.vc.db*

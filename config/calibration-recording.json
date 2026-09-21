@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "driver": {
+    "domain_id": 0,
+    "joint_topic": "/joint_states",
+    "ee_topic": "/ee_state",
+    "ee_message_type": "rammp_arm_interfaces/msg/EeState"
+  },
+  "cameras": {
+    "d405": {
+      "domain_id": 87,
+      "rgb_topic": "/adl_capture/d405/color/image_raw",
+      "depth_topic": "/adl_capture/d405/aligned_depth_to_color/image_raw",
+      "rgb_info_topic": "/adl_capture/d405/color/camera_info",
+      "depth_info_topic": "/adl_capture/d405/aligned_depth_to_color/camera_info",
+      "reliability": "reliable"
+    },
+    "orbbec": {
+      "domain_id": 87,
+      "rgb_topic": "/adl_orbbec/color/image_raw",
+      "depth_topic": "/adl_orbbec/depth/image_raw",
+      "rgb_info_topic": "/adl_orbbec/color/camera_info",
+      "depth_info_topic": "/adl_orbbec/depth/camera_info",
+      "reliability": "reliable"
+    }
+  }
+}

@@ -1,0 +1,350 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "skill_library_hash": {
+      "type": "string",
+      "const": "sha256:0788fb8be77edf9062ae273a230cdd2658459fd59f9e7c9081cdb12f6ca49568"
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "snapshot_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "execution_epoch": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "skill": {
+                "type": "string",
+                "const": "observe"
+              },
+              "args": {
+                "type": "object",
+                "properties": {
+                  "entity_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "camera": {
+                    "type": "string",
+                    "enum": [
+                      "wrist",
+                      "scene"
+                    ]
+                  },
+                  "purpose": {
+                    "type": "string",
+                    "enum": [
+                      "pose",
+                      "articulation",
+                      "state",
+                      "grasp",
+                      "food"
+                    ]
+                  }
+                },
+                "required": [
+                  "entity_id",
+                  "camera",
+                  "purpose"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "id",
+              "skill",
+              "args"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "skill": {
+                "type": "string",
+                "const": "move_to_pose"
+              },
+              "args": {
+                "type": "object",
+                "properties": {
+                  "target": {
+                    "type": "object",
+                    "properties": {
+                      "entity_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "pose_role": {
+                        "type": "string",
+                        "enum": [
+                          "pregrasp",
+                          "grasp",
+                          "staging",
+                          "viewpoint",
+                          "placement",
+                          "retract"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "entity_id",
+                      "pose_role"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "profile_id": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "target",
+                  "profile_id"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "id",
+              "skill",
+              "args"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "skill": {
+                "type": "string",
+                "const": "set_gripper"
+              },
+              "args": {
+                "type": "object",
+                "properties": {
+                  "aperture_m": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 0.2
+                  },
+                  "profile_id": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "aperture_m",
+                  "profile_id"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "id",
+              "skill",
+              "args"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "skill": {
+                "type": "string",
+                "const": "grasp"
+              },
+              "args": {
+                "type": "object",
+                "properties": {
+                  "entity_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "profile_id": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "entity_id",
+                  "profile_id"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "id",
+              "skill",
+              "args"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "skill": {
+                "type": "string",
+                "const": "release"
+              },
+              "args": {
+                "type": "object",
+                "properties": {
+                  "entity_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "support_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "profile_id": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "entity_id",
+                  "support_id",
+                  "profile_id"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "id",
+              "skill",
+              "args"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "skill": {
+                "type": "string",
+                "const": "follow_constraint"
+              },
+              "args": {
+                "type": "object",
+                "properties": {
+                  "entity_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "constraint_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "target_value": {
+                    "type": "number",
+                    "minimum": -10,
+                    "maximum": 10
+                  },
+                  "target_unit": {
+                    "type": "string",
+                    "enum": [
+                      "m",
+                      "rad"
+                    ]
+                  },
+                  "profile_id": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "entity_id",
+                  "constraint_id",
+                  "target_value",
+                  "target_unit",
+                  "profile_id"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "id",
+              "skill",
+              "args"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    "edges": {
+      "type": "array",
+      "maxItems": 512,
+      "items": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "minLength": 1
+          },
+          "to": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "skill_library_hash",
+    "task_id",
+    "snapshot_id",
+    "execution_epoch",
+    "nodes",
+    "edges"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

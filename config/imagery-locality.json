@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "scope": "the routable ROS domains this runtime may subscribe to for camera imagery",
+  "note": "The sheppy deployment publishes its camera streams on the host network in ROS domain 0 by design (rammp-deployments december_2026 manifest, network_mode: host). Subscribing to those streams from this runtime does not confine them; it only reads what the deployment already puts on the wire.",
+  "accepted_routable_domains": [
+    0
+  ],
+  "reason": "sheppy wrist_camera and scene_camera nodes publish on ROS_DOMAIN_ID=0 over network_mode: host; the streams are not loopback-confined by the deployment"
+}

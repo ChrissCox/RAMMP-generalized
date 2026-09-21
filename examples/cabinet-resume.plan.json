@@ -1,0 +1,50 @@
+{
+  "schema_version": "1.0.0",
+  "skill_library_hash": "sha256:0788fb8be77edf9062ae273a230cdd2658459fd59f9e7c9081cdb12f6ca49568",
+  "task_id": "open-cabinet",
+  "snapshot_id": "cabinet-snapshot-3",
+  "execution_epoch": 3,
+  "nodes": [
+    {
+      "id": "r2",
+      "skill": "follow_constraint",
+      "args": {
+        "entity_id": "cabinet_handle_1",
+        "constraint_id": "hinge_1",
+        "target_value": 1,
+        "target_unit": "rad",
+        "profile_id": "sim_cabinet_contact"
+      }
+    },
+    {
+      "id": "r3",
+      "skill": "release",
+      "args": {
+        "entity_id": "cabinet_handle_1",
+        "support_id": "cabinet_door_1",
+        "profile_id": "sim_gripper"
+      }
+    },
+    {
+      "id": "r4",
+      "skill": "move_to_pose",
+      "args": {
+        "target": {
+          "entity_id": "cabinet_handle_1",
+          "pose_role": "retract"
+        },
+        "profile_id": "sim_transit"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "r2",
+      "to": "r3"
+    },
+    {
+      "from": "r3",
+      "to": "r4"
+    }
+  ]
+}

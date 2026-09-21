@@ -1,0 +1,5 @@
+string task_id
+---
+bool available
+rammp_adl_interfaces/WorldState snapshot
+string error_code

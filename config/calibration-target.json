@@ -1,0 +1,9 @@
+{
+  "target_id": "rammp-charuco-7x5-30mm-v1",
+  "dictionary": "DICT_5X5_100",
+  "squares_x": 7,
+  "squares_y": 5,
+  "square_length_m": 0.03,
+  "marker_length_m": 0.0225,
+  "legacy_pattern": false
+}

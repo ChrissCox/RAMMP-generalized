@@ -1,0 +1,1348 @@
+{
+  "schema_version": "1.0.0",
+  "status": "design_only",
+  "units": {
+    "length": "m",
+    "angle": "rad",
+    "time": "s",
+    "force": "N",
+    "torque": "Nm",
+    "quaternion": "xyzw"
+  },
+  "frames": {
+    "planning": "base_link",
+    "note": "Logical role only; exact driver and camera frames must be mapped from installed URDF/TF. Do not hard-code flange/tool offsets."
+  },
+  "resources": {
+    "ARM": {
+      "exclusive": true
+    },
+    "GRIPPER": {
+      "exclusive": true
+    },
+    "PLANNER": {
+      "exclusive": true
+    },
+    "CLOUD_RPC": {
+      "exclusive": true
+    }
+  },
+  "resource_policy": "Claims are exclusive reservations. Sensor reads are not claims. Supervisor ownership is session-scoped; safety overrides every claim. Cloud operations require verified hold and reserve ARM and GRIPPER.",
+  "predicates": {
+    "entity_exists": {
+      "evaluator": "rammp_checks.entity_exists",
+      "status": "planned",
+      "unknown_is_false": true,
+      "arguments": {
+        "type": "object",
+        "properties": {
+          "entity_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "entity_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "held_state": {
+      "evaluator": "rammp_checks.held_state",
+      "status": "planned",
+      "unknown_is_false": true,
+      "arguments": {
+        "type": "object",
+        "properties": {
+          "robot_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "robot_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "observation_valid": {
+      "evaluator": "rammp_checks.observation_valid",
+      "status": "planned",
+      "unknown_is_false": true,
+      "arguments": {
+        "type": "object",
+        "properties": {
+          "entity_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "purpose": {
+            "enum": [
+              "pose",
+              "articulation",
+              "state",
+              "grasp",
+              "food"
+            ]
+          }
+        },
+        "required": [
+          "entity_id",
+          "purpose"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "pose_valid": {
+      "evaluator": "rammp_checks.pose_valid",
+      "status": "planned",
+      "unknown_is_false": true,
+      "arguments": {
+        "type": "object",
+        "properties": {
+          "entity_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "pose_role": {
+            "enum": [
+              "object",
+              "pregrasp",
+              "grasp",
+              "staging",
+              "viewpoint",
+              "placement",
+              "retract"
+            ]
+          }
+        },
+        "required": [
+          "entity_id",
+          "pose_role"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "motion_profile_valid": {
+      "evaluator": "rammp_checks.motion_profile_valid",
+      "status": "planned",
+      "unknown_is_false": true,
+      "arguments": {
+        "type": "object",
+        "properties": {
+          "profile_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "profile_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "at_pose": {
+      "evaluator": "rammp_checks.at_pose",
+      "status": "planned",
+      "unknown_is_false": true,
+      "arguments": {
+        "type": "object",
+        "properties": {
+          "entity_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "pose_role": {
+            "enum": [
+              "object",
+              "pregrasp",
+              "grasp",
+              "staging",
+              "viewpoint",
+              "placement",
+              "retract"
+            ]
+          }
+        },
+        "required": [
+          "entity_id",
+          "pose_role"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "gripper_empty": {
+      "evaluator": "rammp_checks.gripper_empty",
+      "status": "planned",
+      "unknown_is_false": true,
+      "arguments": {
+        "type": "object",
+        "properties": {
+          "robot_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "robot_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "aperture_reached": {
+      "evaluator": "rammp_checks.aperture_reached",
+      "status": "planned",
+      "unknown_is_false": true,
+      "arguments": {
+        "type": "object",
+        "properties": {
+          "aperture_m": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 0.2
+          }
+        },
+        "required": [
+          "aperture_m"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "at_grasp_pose": {
+      "evaluator": "rammp_checks.at_grasp_pose",
+      "status": "planned",
+      "unknown_is_false": true,
+      "arguments": {
+        "type": "object",
+        "properties": {
+          "entity_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "entity_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "holding": {
+      "evaluator": "rammp_checks.holding",
+      "status": "planned",
+      "unknown_is_false": true,
+      "arguments": {
+        "type": "object",
+        "properties": {
+          "entity_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "entity_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "support_verified": {
+      "evaluator": "rammp_checks.support_verified",
+      "status": "planned",
+      "unknown_is_false": true,
+      "arguments": {
+        "type": "object",
+        "properties": {
+          "entity_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "support_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "entity_id",
+          "support_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "at_release_pose": {
+      "evaluator": "rammp_checks.at_release_pose",
+      "status": "planned",
+      "unknown_is_false": true,
+      "arguments": {
+        "type": "object",
+        "properties": {
+          "entity_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "support_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "entity_id",
+          "support_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "released": {
+      "evaluator": "rammp_checks.released",
+      "status": "planned",
+      "unknown_is_false": true,
+      "arguments": {
+        "type": "object",
+        "properties": {
+          "entity_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "support_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "entity_id",
+          "support_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "constraint_valid": {
+      "evaluator": "rammp_checks.constraint_valid",
+      "status": "planned",
+      "unknown_is_false": true,
+      "arguments": {
+        "type": "object",
+        "properties": {
+          "constraint_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "constraint_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "contact_ready": {
+      "evaluator": "rammp_checks.contact_ready",
+      "status": "planned",
+      "unknown_is_false": true,
+      "arguments": {
+        "type": "object",
+        "properties": {
+          "entity_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "constraint_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "profile_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "entity_id",
+          "constraint_id",
+          "profile_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "constraint_goal_verified": {
+      "evaluator": "rammp_checks.constraint_goal_verified",
+      "status": "planned",
+      "unknown_is_false": true,
+      "arguments": {
+        "type": "object",
+        "properties": {
+          "constraint_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "target_value": {
+            "type": "number"
+          },
+          "target_unit": {
+            "enum": [
+              "m",
+              "rad"
+            ]
+          }
+        },
+        "required": [
+          "constraint_id",
+          "target_value",
+          "target_unit"
+        ],
+        "additionalProperties": false
+      }
+    }
+
+
+
+  },
+  "predicate_contract": "Each registered predicate declares a closed argument schema. Conditions bind named fields using literal values or arg_path arrays into typed skill arguments. No expression evaluation. Facts/effects/goals key on predicate plus canonical bound args.",
+  "skills": [
+    {
+      "id": "observe",
+      "summary": "Refresh a known entity candidate from current camera views while held; never move the wrist.",
+      "implementation_status": "implemented",
+      "arguments": {
+        "type": "object",
+        "properties": {
+          "entity_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "camera": {
+            "type": "string",
+            "enum": [
+              "wrist",
+              "scene"
+            ]
+          },
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "pose",
+              "articulation",
+              "state",
+              "grasp",
+              "food"
+            ]
+          }
+        },
+        "required": [
+          "entity_id",
+          "camera",
+          "purpose"
+        ],
+        "additionalProperties": false
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "evidence_id"
+        ],
+        "additionalProperties": false
+      },
+      "claims": [
+        "ARM",
+        "GRIPPER",
+        "CLOUD_RPC"
+      ],
+      "capabilities_required": [
+        "local_geometry",
+        "cloud_grounding"
+      ],
+      "preconditions": [
+        {
+          "predicate": "entity_exists",
+          "bindings": {
+            "entity_id": {
+              "arg_path": [
+                "entity_id"
+              ]
+            }
+          }
+        },
+        {
+          "predicate": "held_state",
+          "bindings": {
+            "robot_id": {
+              "literal": "robot"
+            }
+          }
+        }
+      ],
+      "postconditions": [
+        {
+          "predicate": "observation_valid",
+          "bindings": {
+            "entity_id": {
+              "arg_path": [
+                "entity_id"
+              ]
+            },
+            "purpose": {
+              "arg_path": [
+                "purpose"
+              ]
+            }
+          }
+        }
+      ],
+      "sensors": [
+        "selected_rgb",
+        "selected_depth",
+        "camera_info",
+        "tf"
+      ],
+      "execution": {
+        "mode": "action",
+        "interruptible": true,
+        "cancel": "supervisor_quiesce_and_ack"
+      },
+      "timing": {
+        "nominal_s": 8,
+        "timeout_s": 45
+      },
+      "safety_profile": "stationary",
+      "confirmation": "image_consent_if_needed",
+      "failures": [
+        {
+          "code": "cancelled",
+          "observable": "Supervisor cancellation or execution epoch invalidated",
+          "local_retries": 0,
+          "escalation": "hold"
+        },
+        {
+          "code": "stale_state",
+          "observable": "Required entity, robot state, TF, or collision evidence exceeds configured validity",
+          "local_retries": 0,
+          "escalation": "replan"
+        },
+        {
+          "code": "safety_fault",
+          "observable": "Safety supervisor reports limit, tracking, stop-horizon, or control ownership fault",
+          "local_retries": 0,
+          "escalation": "handoff"
+        },
+        {
+          "code": "no_detection",
+          "observable": "No matched target above calibrated confidence threshold",
+          "local_retries": 1,
+          "escalation": "handoff"
+        },
+        {
+          "code": "geometry_invalid",
+          "observable": "Depth invalid, orientation unobservable, or inconsistent fit",
+          "local_retries": 0,
+          "escalation": "replan"
+        },
+        {
+          "code": "cloud_unavailable",
+          "observable": "Timeout, refusal, rate limit, or transport failure",
+          "local_retries": 0,
+          "escalation": "handoff"
+        }
+      ]
+    },
+    {
+      "id": "move_to_pose",
+      "summary": "Plan and execute cuRobo motion to a locally computed entity pose role, with validated rolling trajectory and bounded same-target updates.",
+      "implementation_status": "implemented",
+      "arguments": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "object",
+            "properties": {
+              "entity_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "pose_role": {
+                "type": "string",
+                "enum": [
+                  "pregrasp",
+                  "grasp",
+                  "staging",
+                  "viewpoint",
+                  "placement",
+                  "retract"
+                ]
+              }
+            },
+            "required": [
+              "entity_id",
+              "pose_role"
+            ],
+            "additionalProperties": false
+          },
+          "profile_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "target",
+          "profile_id"
+        ],
+        "additionalProperties": false
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "evidence_id"
+        ],
+        "additionalProperties": false
+      },
+      "claims": [
+        "ARM",
+        "PLANNER"
+      ],
+      "capabilities_required": [
+        "curobo_transit",
+        "trajectory_execution",
+        "curobo_online_replanning",
+        "continuous_trajectory_handoff",
+        "live_collision_guard"
+      ],
+      "preconditions": [
+        {
+          "predicate": "pose_valid",
+          "bindings": {
+            "entity_id": {
+              "arg_path": [
+                "target",
+                "entity_id"
+              ]
+            },
+            "pose_role": {
+              "arg_path": [
+                "target",
+                "pose_role"
+              ]
+            }
+          }
+        },
+        {
+          "predicate": "motion_profile_valid",
+          "bindings": {
+            "profile_id": {
+              "arg_path": [
+                "profile_id"
+              ]
+            }
+          }
+        }
+      ],
+      "postconditions": [
+        {
+          "predicate": "at_pose",
+          "bindings": {
+            "entity_id": {
+              "arg_path": [
+                "target",
+                "entity_id"
+              ]
+            },
+            "pose_role": {
+              "arg_path": [
+                "target",
+                "pose_role"
+              ]
+            }
+          }
+        }
+      ],
+      "sensors": [
+        "joint_state",
+        "tf",
+        "collision_world",
+        "attachment_state"
+      ],
+      "execution": {
+        "mode": "action",
+        "interruptible": true,
+        "cancel": "supervisor_quiesce_and_ack"
+      },
+      "timing": {
+        "nominal_s": 8,
+        "timeout_s": 120
+      },
+      "safety_profile": "transit",
+      "confirmation": "profile_policy",
+      "failures": [
+        {
+          "code": "cancelled",
+          "observable": "Supervisor cancellation or execution epoch invalidated",
+          "local_retries": 0,
+          "escalation": "hold"
+        },
+        {
+          "code": "stale_state",
+          "observable": "Required entity, robot state, TF, or collision evidence exceeds configured validity",
+          "local_retries": 0,
+          "escalation": "replan"
+        },
+        {
+          "code": "safety_fault",
+          "observable": "Safety supervisor reports limit, tracking, stop-horizon, or control ownership fault",
+          "local_retries": 0,
+          "escalation": "handoff"
+        },
+        {
+          "code": "planning_failed",
+          "observable": "No admissible initial cuRobo trajectory or no validated continuation before the stop deadline; rejection of an optional update while a valid continuation exists is not a skill failure",
+          "local_retries": 0,
+          "escalation": "replan"
+        },
+        {
+          "code": "target_changed",
+          "observable": "Target association is ambiguous or pose correction exceeds the commissioned cumulative tracking envelope",
+          "local_retries": 0,
+          "escalation": "replan"
+        },
+        {
+          "code": "tracking_error",
+          "observable": "Measured motion exceeds profile path/goal tolerance",
+          "local_retries": 0,
+          "escalation": "handoff"
+        }
+      ]
+    },
+    {
+      "id": "set_gripper",
+      "summary": "Set calibrated aperture for an EMPTY gripper; release is a separate skill.",
+      "implementation_status": "implemented",
+      "arguments": {
+        "type": "object",
+        "properties": {
+          "aperture_m": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 0.2
+          },
+          "profile_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "aperture_m",
+          "profile_id"
+        ],
+        "additionalProperties": false
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "evidence_id"
+        ],
+        "additionalProperties": false
+      },
+      "claims": [
+        "GRIPPER"
+      ],
+      "capabilities_required": [
+        "calibrated_aperture"
+      ],
+      "preconditions": [
+        {
+          "predicate": "gripper_empty",
+          "bindings": {
+            "robot_id": {
+              "literal": "robot"
+            }
+          }
+        },
+        {
+          "predicate": "motion_profile_valid",
+          "bindings": {
+            "profile_id": {
+              "arg_path": [
+                "profile_id"
+              ]
+            }
+          }
+        }
+      ],
+      "postconditions": [
+        {
+          "predicate": "aperture_reached",
+          "bindings": {
+            "aperture_m": {
+              "arg_path": [
+                "aperture_m"
+              ]
+            }
+          }
+        }
+      ],
+      "sensors": [
+        "gripper_state"
+      ],
+      "execution": {
+        "mode": "action",
+        "interruptible": true,
+        "cancel": "supervisor_quiesce_and_ack"
+      },
+      "timing": {
+        "nominal_s": 3,
+        "timeout_s": 15
+      },
+      "safety_profile": "gripper",
+      "confirmation": "profile_policy",
+      "failures": [
+        {
+          "code": "cancelled",
+          "observable": "Supervisor cancellation or execution epoch invalidated",
+          "local_retries": 0,
+          "escalation": "hold"
+        },
+        {
+          "code": "stale_state",
+          "observable": "Required entity, robot state, TF, or collision evidence exceeds configured validity",
+          "local_retries": 0,
+          "escalation": "replan"
+        },
+        {
+          "code": "safety_fault",
+          "observable": "Safety supervisor reports limit, tracking, stop-horizon, or control ownership fault",
+          "local_retries": 0,
+          "escalation": "handoff"
+        },
+        {
+          "code": "obstructed",
+          "observable": "Aperture stalls outside calibrated tolerance",
+          "local_retries": 0,
+          "escalation": "handoff"
+        }
+      ]
+    },
+    {
+      "id": "grasp",
+      "summary": "Close on a seated object and verify retention; no arm repositioning inside retries.",
+      "implementation_status": "implemented",
+      "arguments": {
+        "type": "object",
+        "properties": {
+          "entity_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "profile_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "entity_id",
+          "profile_id"
+        ],
+        "additionalProperties": false
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "evidence_id"
+        ],
+        "additionalProperties": false
+      },
+      "claims": [
+        "ARM",
+        "GRIPPER"
+      ],
+      "capabilities_required": [
+        "calibrated_grasp",
+        "local_retention_monitor"
+      ],
+      "preconditions": [
+        {
+          "predicate": "at_grasp_pose",
+          "bindings": {
+            "entity_id": {
+              "arg_path": [
+                "entity_id"
+              ]
+            }
+          }
+        },
+        {
+          "predicate": "gripper_empty",
+          "bindings": {
+            "robot_id": {
+              "literal": "robot"
+            }
+          }
+        },
+        {
+          "predicate": "pose_valid",
+          "bindings": {
+            "entity_id": {
+              "arg_path": [
+                "entity_id"
+              ]
+            },
+            "pose_role": {
+              "literal": "grasp"
+            }
+          }
+        },
+        {
+          "predicate": "motion_profile_valid",
+          "bindings": {
+            "profile_id": {
+              "arg_path": [
+                "profile_id"
+              ]
+            }
+          }
+        }
+      ],
+      "postconditions": [
+        {
+          "predicate": "holding",
+          "bindings": {
+            "entity_id": {
+              "arg_path": [
+                "entity_id"
+              ]
+            }
+          }
+        }
+      ],
+      "sensors": [
+        "gripper_state",
+        "local_rgb_depth",
+        "joint_state"
+      ],
+      "execution": {
+        "mode": "action",
+        "interruptible": true,
+        "cancel": "supervisor_quiesce_and_ack"
+      },
+      "timing": {
+        "nominal_s": 4,
+        "timeout_s": 25
+      },
+      "safety_profile": "gripper",
+      "confirmation": "profile_policy",
+      "failures": [
+        {
+          "code": "cancelled",
+          "observable": "Supervisor cancellation or execution epoch invalidated",
+          "local_retries": 0,
+          "escalation": "hold"
+        },
+        {
+          "code": "stale_state",
+          "observable": "Required entity, robot state, TF, or collision evidence exceeds configured validity",
+          "local_retries": 0,
+          "escalation": "replan"
+        },
+        {
+          "code": "safety_fault",
+          "observable": "Safety supervisor reports limit, tracking, stop-horizon, or control ownership fault",
+          "local_retries": 0,
+          "escalation": "handoff"
+        },
+        {
+          "code": "empty_grasp",
+          "observable": "Closure and local visual evidence show no retained object",
+          "local_retries": 0,
+          "escalation": "replan"
+        },
+        {
+          "code": "slip",
+          "observable": "Relative object motion or loss of validated retention evidence",
+          "local_retries": 0,
+          "escalation": "handoff"
+        },
+        {
+          "code": "crush_risk",
+          "observable": "Current/effort or deformation exceeds calibrated object profile",
+          "local_retries": 0,
+          "escalation": "handoff"
+        }
+      ]
+    },
+    {
+      "id": "release",
+      "summary": "Open only after support or recipient retention is verified; commit detachment after evidence.",
+      "implementation_status": "implemented",
+      "arguments": {
+        "type": "object",
+        "properties": {
+          "entity_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "support_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "profile_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "entity_id",
+          "support_id",
+          "profile_id"
+        ],
+        "additionalProperties": false
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "evidence_id"
+        ],
+        "additionalProperties": false
+      },
+      "claims": [
+        "ARM",
+        "GRIPPER"
+      ],
+      "capabilities_required": [
+        "calibrated_aperture",
+        "support_detection"
+      ],
+      "preconditions": [
+        {
+          "predicate": "holding",
+          "bindings": {
+            "entity_id": {
+              "arg_path": [
+                "entity_id"
+              ]
+            }
+          }
+        },
+        {
+          "predicate": "support_verified",
+          "bindings": {
+            "entity_id": {
+              "arg_path": [
+                "entity_id"
+              ]
+            },
+            "support_id": {
+              "arg_path": [
+                "support_id"
+              ]
+            }
+          }
+        },
+        {
+          "predicate": "at_release_pose",
+          "bindings": {
+            "entity_id": {
+              "arg_path": [
+                "entity_id"
+              ]
+            },
+            "support_id": {
+              "arg_path": [
+                "support_id"
+              ]
+            }
+          }
+        },
+        {
+          "predicate": "motion_profile_valid",
+          "bindings": {
+            "profile_id": {
+              "arg_path": [
+                "profile_id"
+              ]
+            }
+          }
+        }
+      ],
+      "postconditions": [
+        {
+          "predicate": "released",
+          "bindings": {
+            "entity_id": {
+              "arg_path": [
+                "entity_id"
+              ]
+            },
+            "support_id": {
+              "arg_path": [
+                "support_id"
+              ]
+            }
+          }
+        }
+      ],
+      "sensors": [
+        "gripper_state",
+        "local_rgb_depth"
+      ],
+      "execution": {
+        "mode": "action",
+        "interruptible": true,
+        "cancel": "supervisor_quiesce_and_ack"
+      },
+      "timing": {
+        "nominal_s": 3,
+        "timeout_s": 15
+      },
+      "safety_profile": "gripper",
+      "confirmation": "recipient_confirmation_if_handover",
+      "failures": [
+        {
+          "code": "cancelled",
+          "observable": "Supervisor cancellation or execution epoch invalidated",
+          "local_retries": 0,
+          "escalation": "hold"
+        },
+        {
+          "code": "stale_state",
+          "observable": "Required entity, robot state, TF, or collision evidence exceeds configured validity",
+          "local_retries": 0,
+          "escalation": "replan"
+        },
+        {
+          "code": "safety_fault",
+          "observable": "Safety supervisor reports limit, tracking, stop-horizon, or control ownership fault",
+          "local_retries": 0,
+          "escalation": "handoff"
+        },
+        {
+          "code": "support_lost",
+          "observable": "Support/recipient evidence invalid before opening",
+          "local_retries": 0,
+          "escalation": "handoff"
+        },
+        {
+          "code": "release_incomplete",
+          "observable": "Object remains attached after commanded opening",
+          "local_retries": 0,
+          "escalation": "handoff"
+        }
+      ]
+    },
+    {
+      "id": "follow_constraint",
+      "summary": "Use a validated profile's cuRobo-generated guarded approach, contact establishment, continuously updated constrained path and task-effect verification within a bounded model-refinement envelope.",
+      "implementation_status": "implemented",
+      "arguments": {
+        "type": "object",
+        "properties": {
+          "entity_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "constraint_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "target_value": {
+            "type": "number",
+            "minimum": -10,
+            "maximum": 10
+          },
+          "target_unit": {
+            "type": "string",
+            "enum": [
+              "m",
+              "rad"
+            ]
+          },
+          "profile_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "entity_id",
+          "constraint_id",
+          "target_value",
+          "target_unit",
+          "profile_id"
+        ],
+        "additionalProperties": false
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "evidence_id"
+        ],
+        "additionalProperties": false
+      },
+      "claims": [
+        "ARM",
+        "GRIPPER",
+        "PLANNER"
+      ],
+      "capabilities_required": [
+        "curobo_constrained_path",
+        "contact_monitor",
+        "live_collision_guard",
+        "curobo_online_replanning",
+        "continuous_trajectory_handoff",
+        "trajectory_execution"
+      ],
+      "preconditions": [
+        {
+          "predicate": "constraint_valid",
+          "bindings": {
+            "constraint_id": {
+              "arg_path": [
+                "constraint_id"
+              ]
+            }
+          }
+        },
+        {
+          "predicate": "contact_ready",
+          "bindings": {
+            "entity_id": {
+              "arg_path": [
+                "entity_id"
+              ]
+            },
+            "constraint_id": {
+              "arg_path": [
+                "constraint_id"
+              ]
+            },
+            "profile_id": {
+              "arg_path": [
+                "profile_id"
+              ]
+            }
+          }
+        },
+        {
+          "predicate": "motion_profile_valid",
+          "bindings": {
+            "profile_id": {
+              "arg_path": [
+                "profile_id"
+              ]
+            }
+          }
+        }
+      ],
+      "postconditions": [
+        {
+          "predicate": "constraint_goal_verified",
+          "bindings": {
+            "constraint_id": {
+              "arg_path": [
+                "constraint_id"
+              ]
+            },
+            "target_value": {
+              "arg_path": [
+                "target_value"
+              ]
+            },
+            "target_unit": {
+              "arg_path": [
+                "target_unit"
+              ]
+            }
+          }
+        }
+      ],
+      "sensors": [
+        "joint_state",
+        "contact_estimate",
+        "local_rgb_depth",
+        "collision_world"
+      ],
+      "execution": {
+        "mode": "action",
+        "interruptible": true,
+        "cancel": "supervisor_quiesce_and_ack"
+      },
+      "timing": {
+        "nominal_s": 60,
+        "timeout_s": 240
+      },
+      "safety_profile": "contact",
+      "confirmation": "profile_policy",
+      "failures": [
+        {
+          "code": "cancelled",
+          "observable": "Supervisor cancellation or execution epoch invalidated",
+          "local_retries": 0,
+          "escalation": "hold"
+        },
+        {
+          "code": "stale_state",
+          "observable": "Required entity, robot state, TF, or collision evidence exceeds configured validity",
+          "local_retries": 0,
+          "escalation": "replan"
+        },
+        {
+          "code": "safety_fault",
+          "observable": "Safety supervisor reports limit, tracking, stop-horizon, or control ownership fault",
+          "local_retries": 0,
+          "escalation": "handoff"
+        },
+        {
+          "code": "model_mismatch",
+          "observable": "Unexpected contact load or observed articulation disagrees beyond the commissioned model-refinement envelope; locally evidenced refinement within that envelope is normal execution",
+          "local_retries": 0,
+          "escalation": "replan"
+        },
+        {
+          "code": "planning_failed",
+          "observable": "No admissible initial cuRobo trajectory or no validated continuation before the stop deadline; rejection of an optional update while a valid continuation exists is not a skill failure",
+          "local_retries": 0,
+          "escalation": "replan"
+        },
+        {
+          "code": "slip",
+          "observable": "Held target moves relative to gripper during constraint motion",
+          "local_retries": 0,
+          "escalation": "handoff"
+        },
+        {
+          "code": "goal_unobserved",
+          "observable": "Path completed but task state change not observed",
+          "local_retries": 0,
+          "escalation": "replan"
+        }
+      ]
+    }
+
+
+  ]
+}

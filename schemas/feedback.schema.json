@@ -1,0 +1,38 @@
+{
+  "type": "object",
+  "properties": {
+    "code": {
+      "type": "string",
+      "minLength": 1
+    },
+    "node_id": {
+      "type": "string"
+    },
+    "detail": {
+      "type": "string"
+    },
+    "completed_nodes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "invalidated_entities": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "required": [
+    "code",
+    "node_id",
+    "detail",
+    "completed_nodes",
+    "invalidated_entities"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

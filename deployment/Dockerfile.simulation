@@ -1,0 +1,52 @@
+# Source-verified base recipe:
+# https://github.com/osrf/docker_images/tree/master/ros/humble/ubuntu/jammy/ros-base
+# Build: docker build -f deployment/Dockerfile.simulation -t rammp-adl-sim .
+# Test:  docker run --rm --network none rammp-adl-sim check
+# No hardware devices, host network, robot sockets or GPU runtime are required.
+FROM ros:humble-ros-base-jammy
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    ROS_LOCALHOST_ONLY=1 \
+    ROS_DOMAIN_ID=97 \
+    MUJOCO_GL=osmesa \
+    PYOPENGL_PLATFORM=osmesa
+
+RUN apt-get update && apt-get install --no-install-recommends -y \
+      python3-pip python3-colcon-common-extensions \
+      ros-humble-ament-cmake-python ros-humble-rosidl-default-generators \
+      ros-humble-action-msgs ros-humble-geometry-msgs ros-humble-sensor-msgs \
+      libosmesa6 libgl1 libglib2.0-0 && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/rammp
+COPY pyproject.toml README.md ./
+COPY rammp_adl ./rammp_adl
+COPY skills ./skills
+COPY schemas ./schemas
+COPY config ./config
+COPY examples ./examples
+COPY tools ./tools
+COPY tests ./tests
+COPY interfaces ./interfaces
+COPY ros2 ./ros2
+COPY simulation ./simulation
+COPY docs ./docs
+COPY deployment ./deployment
+
+# Ubuntu's apt jsonschema/numpy versions predate this project's runtime bounds.
+# pip installs the declared Python versions; it does not install GPU/cuRobo code.
+RUN python3 -m pip install --no-cache-dir '.[simulation,reasoning,cameras]'
+RUN source /opt/ros/humble/setup.bash && \
+    colcon build --base-paths interfaces ros2/rammp_adl_runtime \
+      --merge-install --event-handlers console_direct+
+RUN source /opt/ros/humble/setup.bash && source install/setup.bash && \
+    python3 -c 'from rammp_adl_interfaces.action import ExecuteSkill, ExecuteTask; from rammp_adl_interfaces.srv import GeneratePlan; import rammp_adl.ros_node' && \
+    python3 tools/check_design.py && \
+    python3 -m unittest discover -s tests -v
+
+# Deliberately no EXPOSE, VOLUME, device access or GPU capability declarations.
+ENTRYPOINT ["/bin/bash", "/opt/rammp/deployment/simulation-entrypoint.sh"]
+CMD ["check"]

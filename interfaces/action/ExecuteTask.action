@@ -1,0 +1,12 @@
+# NEW project-owned task entry point. The world already holds a trusted normalized goal.
+# A nonempty plan_json runs an exact admitted DAG; empty uses the configured reasoner.
+string task_id
+string task_text
+string plan_json
+---
+string status
+string result_json
+---
+string phase
+string[] completed_nodes
+

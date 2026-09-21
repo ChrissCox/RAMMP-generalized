@@ -1,0 +1,12 @@
+string plan_json
+string snapshot_id
+uint64 execution_epoch
+# Empty for whole-plan admission; nonempty for one motion dispatch.
+string dispatch_node_id
+---
+bool valid
+string validation_id
+string checked_snapshot_id
+uint64 execution_epoch
+string[] error_codes
+string detail

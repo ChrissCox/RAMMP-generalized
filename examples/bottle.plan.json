@@ -1,0 +1,93 @@
+{
+  "schema_version": "1.0.0",
+  "skill_library_hash": "sha256:0788fb8be77edf9062ae273a230cdd2658459fd59f9e7c9081cdb12f6ca49568",
+  "task_id": "bring-bottle-to-mouth",
+  "snapshot_id": "bottle-snapshot-1",
+  "execution_epoch": 1,
+  "nodes": [
+    {
+      "id": "b1",
+      "skill": "observe",
+      "args": {
+        "entity_id": "bottle_1",
+        "camera": "scene",
+        "purpose": "pose"
+      }
+    },
+    {
+      "id": "b2",
+      "skill": "move_to_pose",
+      "args": {
+        "target": {
+          "entity_id": "bottle_1",
+          "pose_role": "pregrasp"
+        },
+        "profile_id": "sim_transit"
+      }
+    },
+    {
+      "id": "b3",
+      "skill": "set_gripper",
+      "args": {
+        "aperture_m": 0.075,
+        "profile_id": "sim_gripper"
+      }
+    },
+    {
+      "id": "b4",
+      "skill": "move_to_pose",
+      "args": {
+        "target": {
+          "entity_id": "bottle_1",
+          "pose_role": "grasp"
+        },
+        "profile_id": "sim_transit"
+      }
+    },
+    {
+      "id": "b5",
+      "skill": "grasp",
+      "args": {
+        "entity_id": "bottle_1",
+        "profile_id": "sim_gripper"
+      }
+    },
+    {
+      "id": "b6",
+      "skill": "move_to_pose",
+      "args": {
+        "target": {
+          "entity_id": "bottle_1",
+          "pose_role": "staging"
+        },
+        "profile_id": "sim_transit"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "b1",
+      "to": "b2"
+    },
+    {
+      "from": "b1",
+      "to": "b3"
+    },
+    {
+      "from": "b2",
+      "to": "b4"
+    },
+    {
+      "from": "b3",
+      "to": "b4"
+    },
+    {
+      "from": "b4",
+      "to": "b5"
+    },
+    {
+      "from": "b5",
+      "to": "b6"
+    }
+  ]
+}

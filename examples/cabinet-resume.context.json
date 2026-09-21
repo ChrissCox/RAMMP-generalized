@@ -1,0 +1,202 @@
+{
+  "schema_version": "1.0.0",
+  "task_id": "open-cabinet",
+  "snapshot_id": "cabinet-snapshot-3",
+  "execution_epoch": 3,
+  "revision": 3,
+  "collision_revision": 3,
+  "base_epoch": "table-base-1",
+  "calibration_id": "fixture-calibration-1",
+  "robot_config_id": "fixture-gen3-uncommissioned",
+  "attachment_id": "empty",
+  "entities": [
+    {
+      "entity_id": "cabinet_handle_1",
+      "label": "handle fixed to cabinet door 1",
+      "entity_revision": 3,
+      "pose_roles": [
+        "pregrasp",
+        "grasp",
+        "retract"
+      ],
+      "facts": [
+        {
+          "predicate": "holding",
+          "validity": "true",
+          "evidence_id": "mock-cabinet_handle_1-holding",
+          "age_s": 0,
+          "args": {
+            "entity_id": "cabinet_handle_1"
+          }
+        },
+        {
+          "predicate": "constraint_valid",
+          "validity": "true",
+          "evidence_id": "mock-cabinet_handle_1-constraint_valid",
+          "age_s": 0,
+          "args": {
+            "constraint_id": "hinge_1"
+          }
+        },
+        {
+          "predicate": "pose_valid",
+          "args": {
+            "entity_id": "cabinet_handle_1",
+            "pose_role": "pregrasp"
+          },
+          "validity": "true",
+          "evidence_id": "mock-corrected-handle-pregrasp",
+          "age_s": 0
+        },
+        {
+          "predicate": "pose_valid",
+          "args": {
+            "entity_id": "cabinet_handle_1",
+            "pose_role": "grasp"
+          },
+          "validity": "true",
+          "evidence_id": "mock-corrected-handle-grasp",
+          "age_s": 0
+        },
+        {
+          "predicate": "pose_valid",
+          "args": {
+            "entity_id": "cabinet_handle_1",
+            "pose_role": "retract"
+          },
+          "validity": "true",
+          "evidence_id": "mock-corrected-handle-retract",
+          "age_s": 0
+        }
+      ],
+      "confidence": 0.9,
+      "age_s": 0,
+      "position_validity": "true",
+      "orientation_validity": "true",
+      "source_ids": [
+        "mock-local-evidence"
+      ]
+    },
+    {
+      "entity_id": "cabinet_door_1",
+      "label": "supported cabinet door 1",
+      "entity_revision": 1,
+      "pose_roles": [],
+      "facts": [
+        {
+          "predicate": "support_verified",
+          "validity": "true",
+          "evidence_id": "mock-cabinet_door_1-support_verified",
+          "age_s": 0,
+          "args": {
+            "entity_id": "cabinet_handle_1",
+            "support_id": "cabinet_door_1"
+          }
+        }
+      ],
+      "confidence": 0.9,
+      "age_s": 0,
+      "position_validity": "unknown",
+      "orientation_validity": "unknown",
+      "source_ids": [
+        "mock-local-evidence"
+      ]
+    },
+    {
+      "entity_id": "robot",
+      "label": "mock robot state",
+      "entity_revision": 3,
+      "pose_roles": [],
+      "facts": [
+        {
+          "predicate": "held_state",
+          "validity": "true",
+          "evidence_id": "mock-robot-held_state",
+          "age_s": 0,
+          "args": {
+            "robot_id": "robot"
+          }
+        },
+        {
+          "predicate": "gripper_empty",
+          "validity": "false",
+          "evidence_id": "mock-robot-gripper_empty",
+          "age_s": 0,
+          "args": {
+            "robot_id": "robot"
+          }
+        }
+      ],
+      "confidence": 0.9,
+      "age_s": 0,
+      "position_validity": "unknown",
+      "orientation_validity": "unknown",
+      "source_ids": [
+        "mock-local-evidence"
+      ]
+    }
+  ],
+  "constraints": [
+    {
+      "constraint_id": "hinge_1",
+      "entity_id": "cabinet_handle_1",
+      "kind": "revolute",
+      "unit": "rad",
+      "minimum": 0,
+      "maximum": 1.3,
+      "validity": "true",
+      "confidence": 0.9
+    }
+  ],
+  "profiles": [
+    {
+      "profile_id": "sim_transit",
+      "safety_class": "transit",
+      "simulation_only": true
+    },
+    {
+      "profile_id": "sim_gripper",
+      "safety_class": "gripper",
+      "simulation_only": true
+    },
+    {
+      "profile_id": "sim_cabinet_contact",
+      "safety_class": "contact",
+      "simulation_only": true
+    },
+    {
+      "profile_id": "sim_bottle_standoff",
+      "safety_class": "human",
+      "simulation_only": true
+    }
+  ],
+  "available_skills": [
+    "observe",
+    "move_to_pose",
+    "set_gripper",
+    "grasp",
+    "release",
+    "follow_constraint"
+  ],
+  "hazards": [
+    "SIMULATION FIXTURE: geometry and hardware capabilities are not commissioned.",
+    "Corrected fit is mock evidence; holding/support and swept path require runtime verification."
+  ],
+  "completed_nodes": [
+    "c1",
+    "c2",
+    "c3",
+    "c4",
+    "c5",
+    "r1"
+  ],
+  "goal": {
+    "predicate": "constraint_goal_verified",
+    "args": {
+      "constraint_id": "hinge_1",
+      "target_value": 1,
+      "target_unit": "rad"
+    }
+  },
+  "grasp_state_id": "mock-handle-contact-1"
+}

@@ -1,0 +1,59 @@
+{
+  "schema_version": "1.0.0",
+  "task_id": "sheppy-bench",
+  "snapshot_id": "sheppy-bench-1",
+  "execution_epoch": 1,
+  "revision": 1,
+  "collision_revision": 1,
+  "base_epoch": "bench-table-mount-2026-09",
+  "calibration_id": "d405-wrist-mount-measured-2026-08-25",
+  "robot_config_id": "sheppy-kinova-gen3-7dof-2f85",
+  "attachment_id": "empty",
+  "entities": [
+    {
+      "entity_id": "robot",
+      "label": "Kinova Gen3 with Robotiq 2F-85, sheppy arm module",
+      "entity_revision": 1,
+      "pose_roles": [],
+      "facts": [],
+      "confidence": 1.0,
+      "age_s": 0,
+      "position_validity": "unknown",
+      "orientation_validity": "unknown",
+      "source_ids": [
+        "sheppy_client_bootstrap"
+      ]
+    }
+  ],
+  "constraints": [],
+  "profiles": [
+    {
+      "profile_id": "bench_transit",
+      "safety_class": "transit",
+      "simulation_only": false
+    },
+    {
+      "profile_id": "bench_gripper",
+      "safety_class": "gripper",
+      "simulation_only": false
+    },
+    {
+      "profile_id": "bench_contact",
+      "safety_class": "contact",
+      "simulation_only": false
+    }
+  ],
+  "available_skills": [],
+  "hazards": [
+    "robot_state_bootstrapped_from_measurement_at_startup",
+    "scene_entities_must_come_from_observation_or_an_explicit_context"
+  ],
+  "completed_nodes": [],
+  "goal": {
+    "predicate": "held_state",
+    "args": {
+      "robot_id": "robot"
+    }
+  },
+  "grasp_state_id": "empty-at-startup"
+}

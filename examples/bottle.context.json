@@ -1,0 +1,173 @@
+{
+  "schema_version": "1.0.0",
+  "task_id": "bring-bottle-to-mouth",
+  "snapshot_id": "bottle-snapshot-1",
+  "execution_epoch": 1,
+  "revision": 1,
+  "collision_revision": 1,
+  "base_epoch": "table-base-1",
+  "calibration_id": "fixture-calibration-1",
+  "robot_config_id": "fixture-gen3-uncommissioned",
+  "attachment_id": "empty",
+  "entities": [
+    {
+      "entity_id": "bottle_1",
+      "label": "upright retained bottle; no automatic tilting",
+      "entity_revision": 1,
+      "pose_roles": [
+        "pregrasp",
+        "grasp",
+        "staging",
+        "placement"
+      ],
+      "facts": [
+        {
+          "predicate": "entity_exists",
+          "validity": "true",
+          "evidence_id": "mock-bottle_1-entity_exists",
+          "age_s": 0,
+          "args": {
+            "entity_id": "bottle_1"
+          }
+        },
+        {
+          "predicate": "pose_valid",
+          "validity": "true",
+          "evidence_id": "mock-bottle_1-pose_valid",
+          "age_s": 0,
+          "args": {
+            "entity_id": "bottle_1",
+            "pose_role": "pregrasp"
+          }
+        },
+        {
+          "predicate": "pose_valid",
+          "validity": "true",
+          "evidence_id": "mock-bottle_1-pose_valid",
+          "age_s": 0,
+          "args": {
+            "entity_id": "bottle_1",
+            "pose_role": "grasp"
+          }
+        },
+        {
+          "predicate": "pose_valid",
+          "validity": "true",
+          "evidence_id": "mock-bottle_1-pose_valid",
+          "age_s": 0,
+          "args": {
+            "entity_id": "bottle_1",
+            "pose_role": "staging"
+          }
+        },
+        {
+          "predicate": "pose_valid",
+          "validity": "true",
+          "evidence_id": "mock-bottle_1-pose_valid",
+          "age_s": 0,
+          "args": {
+            "entity_id": "bottle_1",
+            "pose_role": "placement"
+          }
+        }
+      ],
+      "confidence": 0.9,
+      "age_s": 0,
+      "position_validity": "true",
+      "orientation_validity": "true",
+      "source_ids": [
+        "mock-local-evidence"
+      ]
+    },
+    {
+      "entity_id": "tray_1",
+      "label": "stable return support",
+      "entity_revision": 1,
+      "pose_roles": [],
+      "facts": [],
+      "confidence": 0.9,
+      "age_s": 0,
+      "position_validity": "unknown",
+      "orientation_validity": "unknown",
+      "source_ids": [
+        "mock-local-evidence"
+      ]
+    },
+    {
+      "entity_id": "robot",
+      "label": "mock robot state",
+      "entity_revision": 1,
+      "pose_roles": [],
+      "facts": [
+        {
+          "predicate": "held_state",
+          "validity": "true",
+          "evidence_id": "mock-robot-held_state",
+          "age_s": 0,
+          "args": {
+            "robot_id": "robot"
+          }
+        },
+        {
+          "predicate": "gripper_empty",
+          "validity": "true",
+          "evidence_id": "mock-robot-gripper_empty",
+          "age_s": 0,
+          "args": {
+            "robot_id": "robot"
+          }
+        }
+      ],
+      "confidence": 0.9,
+      "age_s": 0,
+      "position_validity": "unknown",
+      "orientation_validity": "unknown",
+      "source_ids": [
+        "mock-local-evidence"
+      ]
+    }
+  ],
+  "constraints": [],
+  "profiles": [
+    {
+      "profile_id": "sim_transit",
+      "safety_class": "transit",
+      "simulation_only": true
+    },
+    {
+      "profile_id": "sim_gripper",
+      "safety_class": "gripper",
+      "simulation_only": true
+    },
+    {
+      "profile_id": "sim_cabinet_contact",
+      "safety_class": "contact",
+      "simulation_only": true
+    },
+    {
+      "profile_id": "sim_bottle_standoff",
+      "safety_class": "human",
+      "simulation_only": true
+    }
+  ],
+  "available_skills": [
+    "observe",
+    "move_to_pose",
+    "set_gripper",
+    "grasp",
+    "release",
+    "follow_constraint"
+  ],
+  "hazards": [
+    "SIMULATION FIXTURE: geometry and hardware capabilities are not commissioned."
+  ],
+  "completed_nodes": [],
+  "goal": {
+    "predicate": "at_pose",
+    "args": {
+      "entity_id": "bottle_1",
+      "pose_role": "staging"
+    }
+  },
+  "grasp_state_id": "empty"
+}

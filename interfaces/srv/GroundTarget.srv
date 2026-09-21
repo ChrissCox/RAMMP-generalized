@@ -1,0 +1,18 @@
+string request_id
+uint64 execution_epoch
+string entity_id
+string query
+rammp_adl_interfaces/ImageCrop[] images
+---
+uint8 OK=0
+uint8 NO_DETECTION=1
+uint8 INVALID_OUTPUT=2
+uint8 REFUSED=3
+uint8 TIMEOUT=4
+uint8 RATE_LIMITED=5
+uint8 UNAVAILABLE=6
+uint8 status
+string request_id
+uint64 execution_epoch
+string candidates_json
+string detail

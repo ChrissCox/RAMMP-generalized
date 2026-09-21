@@ -1,0 +1,57 @@
+# External interface facts
+
+Original source contracts were verified through the connected GitHub app on 2026-09-08. The guarded command overlay was migrated from the original ROS pin to the locally inspected installed source and interface split during the September Jetson follow-up. Source verification is distinct from physical deployment validation.
+
+| Dependency | Source pin |
+|---|---|
+| [kinova-gen3-ros2](https://github.com/rammp-org/kinova-gen3-ros2) | 3337456a1e6062969934174091b3e0ce1bb55f9c; guarded overlay, matching inspected installed source |
+| rammp-interfaces-ros2 | 38b326451ce289e0e3a473fee77a9be4cedeffa1; split arm/common IDL |
+| [RAMMP-CuRobo](https://github.com/rammp-org/RAMMP-CuRobo) | 320872b709b276fc7283190d24edef7f8632bec9 |
+| Low-level kinova-gen3-driver, checked locally on Jetson 2026-09-11 | v1.0.0, 5eb6582f015fc4dd8856c081c4cc14dc536be024; [build manifest](../../artifacts/jetson/driver-hardware/hardware-build-manifest.json) |
+
+## Verified source contracts
+
+| Boundary | Fact and implementation consequence |
+|---|---|
+| Driver planning | Driver calls an external cuRobo action server; there is no second embedded planner. Avoid validating one path then secretly replanning via a go_to helper. |
+| ExecuteJointTrajectory | Goal has trajectory, path/goal tolerances, control_mode (position or impedance), preemption, gains, sender_id and token. Driver tracking a validated cuRobo joint trajectory is the selected integration. |
+| PlanToPose | Goal has Pose target and explicit start_joints. Result includes success/message, full-speed JointTrajectory and planning_time. There is no /joint_states fallback. |
+| PlanToJoints | Requires explicit start/target joints. Check goal_mismatch_rad before claiming exact requested configuration. |
+| SetWorld | Request contains only string world (YAML path/packaged name); result success/message. It does not accept a cuboid message or return a world hash. |
+| Planner server | One lock serializes each update or planning call. Update-plus-plan identity still requires an adapter transaction. No cancel callback is implemented; discard late results rather than promise GPU cancellation. |
+| Motion coverage | Wrapper implements cuRobo MotionGen, world updates and state checks. No contact controller or MPC interface is exposed by this integration. |
+| Rolling motion | PlanToPose accepts start_joints but no start velocity/acceleration. ExecuteJointTrajectory offers QUEUE/LATEST_WINS preemption, but its IDL does not establish future suffix replacement, generation acknowledgement or continuous moving-state handoff. These are required adapter/deployment checks, not existing API guarantees. |
+| State | /ee_state is model-derived; publisher stamps node time and leaves header.frame_id unset. LOCAL_WORLD_ALIGNED is a kinematic convention, not a TF frame name. Adapter must verify frame/model agreement. |
+| Gripper | GripperSetpoint contains position 0=open..1=closed, speed and force (motor-current ceiling). Explicitly set all values. GripperState includes Header, normalized effort, current amps and present. |
+| Safety | Source /estop is a software path with reliable/volatile delivery; do not describe it as a physical emergency-stop circuit or change its QoS by prose. |
+
+Sources:
+- [Driver planner client](https://github.com/rammp-org/kinova-gen3-ros2/blob/4aa7e5e1c2a649f522f1995edcc85b66041a6492/kinova_gen3_ros2/src/curobo_plan_client.cpp)
+- [Driver trajectory action](https://github.com/rammp-org/kinova-gen3-ros2/blob/4aa7e5e1c2a649f522f1995edcc85b66041a6492/kinova_gen3_interfaces/action/ExecuteJointTrajectory.action)
+- [Pose planning action](https://github.com/rammp-org/RAMMP-CuRobo/blob/320872b709b276fc7283190d24edef7f8632bec9/rammp_curobo_interfaces/action/PlanToPose.action), [joint planning action](https://github.com/rammp-org/RAMMP-CuRobo/blob/320872b709b276fc7283190d24edef7f8632bec9/rammp_curobo_interfaces/action/PlanToJoints.action)
+- [SetWorld IDL](https://github.com/rammp-org/RAMMP-CuRobo/blob/320872b709b276fc7283190d24edef7f8632bec9/rammp_curobo_interfaces/srv/SetWorld.srv), [planner server](https://github.com/rammp-org/RAMMP-CuRobo/blob/320872b709b276fc7283190d24edef7f8632bec9/rammp_curobo_ros/rammp_curobo_ros/planner_node.py), [planner implementation](https://github.com/rammp-org/RAMMP-CuRobo/blob/320872b709b276fc7283190d24edef7f8632bec9/core/rammp_curobo/planner.py)
+- [State publisher](https://github.com/rammp-org/kinova-gen3-ros2/blob/4aa7e5e1c2a649f522f1995edcc85b66041a6492/kinova_gen3_ros2/src/ros2_backend.cpp), [gripper command](https://github.com/rammp-org/kinova-gen3-ros2/blob/4aa7e5e1c2a649f522f1995edcc85b66041a6492/kinova_gen3_interfaces/msg/GripperSetpoint.msg)
+
+## Deployment assumptions and missing capabilities
+
+Passive inspection of the current Jetson driver found the newer `rammp_arm_interfaces` / `rammp_common_interfaces` package split. Four installed ROS source files match local checkout `3337456a1e6062969934174091b3e0ce1bb55f9c`; three differ from the original project ROS pin `4aa7e5e1c2a649f522f1995edcc85b66041a6492` used by the original source links above. The earlier custom-driver audit incorrectly associated these local source hashes with that original pin. [Corrected source comparison](../../artifacts/jetson/passive-commissioning/installed-interface-audit.json). The guarded overlay has now been rebuilt against the newer ROS source and `rammp-interfaces-ros2` pin in the table. Consumed trajectory, ownership, status and stop payload declarations match the inspected definitions; package imports are explicit. Generated-message serialization, native guards and isolated DDS simulation passed, and the physical-capable build compiled. [Migration evidence](../../artifacts/jetson/real-world-ready/driver-split/summary.json). The running driver was not modified or restarted and does not acquire these new guards merely because its source revision matches.
+
+`/joint_states` (`sensor_msgs/msg/JointState`) and `/ee_state` (`rammp_arm_interfaces/msg/EeState`) were passively received from the current physical driver's `kinova_gen3_node` with sensor-data QoS. The [diagnostic reader](../../rammp_adl/motion/driver_state.py) explicitly supports both inspected EeState package names. A [30-second capture](../../artifacts/jetson/passive-commissioning/live-state-2/report.json) measured publication delivery, not hardware acquisition age or stopping behavior. It sent no commands and acquired no ownership. This observation does not enable the physical command transport or physical skill handlers.
+
+The NEW [driver overlay](../../deployment/driver-hardware/) instruments successful Kortex/SimTransport exchanges and wraps ownership with a non-stealing grant plus an independent C++ heartbeat watchdog. It does not change the facts about the original upstream services: calling unpatched `AcquireControl` still seizes control. The hardware composition requires source-pinned extension feedback before using the patched claim path. Actual DDS simulation checks and physical-capable compilation passed; physical timing/stopping remain unmeasured. The [runbook](../hardware-testing.md) distinguishes that implementation from deployed physical capabilities.
+
+The overlay additionally implements a NEW gripper halt below the pinned controller: after a commanded-gripper stop it substitutes the last measured normalized position and preserves the prior current ceiling. The additive [DriverFeedback IDL](../../interfaces/msg/DriverFeedback.msg) reports halt support, generation and successful exchange acknowledgement. The original upstream GripperSetpoint remains token-gated and has no such acknowledgement. Actual DDS simulation checked calibrated aperture completion, halt acknowledgement, settling and refusal to resume an old target. Arm-only ownership reuse still works; a halted session with admitted gripper commands requires driver restart before a fresh grant. None of these source/transport checks measures physical finger stopping, force or retention.
+
+The Jetson memory and MAXN mode have been inspected; benchmark actual software/thermals as described in [Jetson setup](../jetson.md). No categorical Orin Nano/NX feasibility claims are justified by this audit. The user confirmed the installed gripper is a Robotiq 2F-85. This resolves the earlier model-name ambiguity; aperture mapping, tool transform, collision-model agreement and measured contact behavior remain unverified. [User-reported hardware identity](../../artifacts/jetson/calibration-preparation/mounting-notes.json)
+
+D405 and temporary Orbbec are separate integrations, not verified driver topics. Logical camera names are project mappings. TODO: confirm camera model, CameraInfo, optical frames, depth validity, timestamps and extrinsics. Do not hard-code a tool offset or substitute node publication time for sensor capture time.
+
+TODO: confirm against driver: measured effort provenance, actual state/control rate and age, arbitration configuration, ownership handoff, low-level stop/hold behavior and full robot/tool frame agreement. Availability of an impedance controller does not establish calibrated force control.
+
+Required adapter extensions before their capabilities are enabled: atomic versioned world installation/planning, attachment geometry, intentional contact semantics, full stopping-horizon collision guarding, constrained cuRobo-generated paths and commissioned human-proximate tracking. No fictional ROS update_world or force topic is part of this design.
+
+Rolling cuRobo replanning and validated continuous trajectory handoff are also required for the currently scoped motion skills; see [performance requirements](14-performance.md). TODO: confirm against planner: moving-state boundary support, applicable cuRobo version, live horizon/constraint updates and bounded solve times. TODO: confirm against driver: atomic suffix acceptance, switch-time semantics, generation acknowledgement and stopping on underrun. The wrapper's current source imports curobo.wrap.reacher.motion_gen; newer upstream API examples cannot be assumed compatible. [Pinned planner implementation](https://github.com/rammp-org/RAMMP-CuRobo/blob/320872b709b276fc7283190d24edef7f8632bec9/core/rammp_curobo/planner.py)
+
+The upstream [MPC interface](https://curobo.org/_api/curobo.wrap.reacher.mpc.html) documents local optimization with goal updates. Its [example and limitations](https://curobo.org/get_started/2a_python_examples.html#model-predictive-control-mpc) describe experimental behavior and weighted collision costs. These establish a candidate implementation route, not deployed Gen3 support, guaranteed contact constraints or an Orin control rate. Pin and verify the chosen version before using its APIs.
+
+The direct project MPC adapter has now run against the isolated, source-hashed cuRobo 0.7.8 package, including unfiltered moving q/dq/ddq input and its full optimized state buffer. This bypasses no planner: cuRobo generates the arm horizon; independent project checks screen the resulting curve. [GPU provenance and cases](../../artifacts/jetson/independent-readiness/reactive-final-2/report.json) and [rolling MuJoCo rehearsal](../../artifacts/jetson/independent-readiness/reactive-final-2/rolling-rehearsal.json) establish the recorded simulation cases only. The RAMMP wrapper's ROS actions still expose no MPC/atomic suffix protocol; contact paths, stopping certification, live world updates and physical handoffs remain unresolved.

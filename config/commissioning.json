@@ -1,0 +1,24 @@
+{
+  "hardware_motion_enabled": false,
+  "profiles": {},
+  "required_profile_fields": [
+    "max_link_speed_m_s",
+    "max_tool_speed_m_s",
+    "max_joint_speed_rad_s",
+    "max_joint_acceleration_rad_s2",
+    "max_tool_force_n",
+    "max_tool_torque_nm",
+    "joint_residual_limits_nm",
+    "contact_sensor_provenance",
+    "stop_latency_s",
+    "stopping_distance_m",
+    "pose_position_tolerance_m",
+    "pose_orientation_tolerance_rad",
+    "tracking_max_age_s",
+    "collision_max_age_s",
+    "valid_payload_range_kg",
+    "allowed_contacts",
+    "confirmation_policy"
+  ],
+  "note": "No hardware limits have been commissioned. Missing fields disable relevant capability. Simulation candidates are described in docs/design/06-safety.md; they are not hardware defaults."
+}

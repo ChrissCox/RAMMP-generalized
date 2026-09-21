@@ -1,0 +1,12 @@
+string task_id
+uint64 execution_epoch
+string node_id
+string action_digest
+string user_text
+builtin_interfaces/Time expires_at
+---
+bool accepted
+string confirmation_id
+string action_digest
+builtin_interfaces/Time responded_at
+string reason

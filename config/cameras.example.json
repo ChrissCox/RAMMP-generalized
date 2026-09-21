@@ -1,0 +1,8 @@
+{
+  "enabled": false,
+  "roles": {
+    "wrist": {"adapter": "realsense", "serial": null, "frame_id": null, "calibration_id": null, "clock_mapping": null},
+    "scene": {"adapter": "ros", "temporary": true, "rgb_topic": null, "aligned_depth_topic": null, "camera_info_topic": null, "frame_id": null, "calibration_id": null, "clock_mapping": null}
+  },
+  "note": "Explicit deployment input required. No camera model, transform, stream topic, or capture-clock alignment is inferred. Camera access never enables robot commands."
+}

@@ -1,0 +1,121 @@
+{
+  "schema_version": "1.0.0",
+  "skill_library_hash": "sha256:0788fb8be77edf9062ae273a230cdd2658459fd59f9e7c9081cdb12f6ca49568",
+  "task_id": "open-cabinet",
+  "snapshot_id": "cabinet-snapshot-1",
+  "execution_epoch": 1,
+  "nodes": [
+    {
+      "id": "c1",
+      "skill": "observe",
+      "args": {
+        "entity_id": "cabinet_handle_1",
+        "camera": "scene",
+        "purpose": "articulation"
+      }
+    },
+    {
+      "id": "c2",
+      "skill": "move_to_pose",
+      "args": {
+        "target": {
+          "entity_id": "cabinet_handle_1",
+          "pose_role": "pregrasp"
+        },
+        "profile_id": "sim_transit"
+      }
+    },
+    {
+      "id": "c3",
+      "skill": "set_gripper",
+      "args": {
+        "aperture_m": 0.06,
+        "profile_id": "sim_gripper"
+      }
+    },
+    {
+      "id": "c4",
+      "skill": "move_to_pose",
+      "args": {
+        "target": {
+          "entity_id": "cabinet_handle_1",
+          "pose_role": "grasp"
+        },
+        "profile_id": "sim_transit"
+      }
+    },
+    {
+      "id": "c5",
+      "skill": "grasp",
+      "args": {
+        "entity_id": "cabinet_handle_1",
+        "profile_id": "sim_gripper"
+      }
+    },
+    {
+      "id": "c6",
+      "skill": "follow_constraint",
+      "args": {
+        "entity_id": "cabinet_handle_1",
+        "constraint_id": "hinge_1",
+        "target_value": 1,
+        "target_unit": "rad",
+        "profile_id": "sim_cabinet_contact"
+      }
+    },
+    {
+      "id": "c7",
+      "skill": "release",
+      "args": {
+        "entity_id": "cabinet_handle_1",
+        "support_id": "cabinet_door_1",
+        "profile_id": "sim_gripper"
+      }
+    },
+    {
+      "id": "c8",
+      "skill": "move_to_pose",
+      "args": {
+        "target": {
+          "entity_id": "cabinet_handle_1",
+          "pose_role": "retract"
+        },
+        "profile_id": "sim_transit"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "c1",
+      "to": "c2"
+    },
+    {
+      "from": "c1",
+      "to": "c3"
+    },
+    {
+      "from": "c2",
+      "to": "c4"
+    },
+    {
+      "from": "c3",
+      "to": "c4"
+    },
+    {
+      "from": "c4",
+      "to": "c5"
+    },
+    {
+      "from": "c5",
+      "to": "c6"
+    },
+    {
+      "from": "c6",
+      "to": "c7"
+    },
+    {
+      "from": "c7",
+      "to": "c8"
+    }
+  ]
+}

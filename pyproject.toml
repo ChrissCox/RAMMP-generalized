@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rammp-adl"
+version = "0.1.0"
+description = "Contract-driven ADL task autonomy with simulation and gated ROS adapters"
+requires-python = ">=3.10"
+dependencies = ["jsonschema>=4.22,<5", "numpy>=1.26,<3"]
+
+[project.optional-dependencies]
+reasoning = ["openai>=2,<4", "pillow>=10"]
+simulation = ["mujoco>=3.2,<4", "scipy>=1.11"]
+cameras = ["opencv-python>=4.9", "pillow>=10"]
+realsense = ["pyrealsense2>=2.55,<3"]
+assembly = ["trimesh>=4.11,<5", "pycollada>=0.9,<1"]
+calibration = ["scipy>=1.11"]
+
+[project.scripts]
+rammp-adl = "rammp_adl.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["rammp_adl*"]
+
+[tool.setuptools.data-files]
+"share/rammp_adl/skills" = ["skills/adl_skill_library.yaml"]
+"share/rammp_adl/schemas" = ["schemas/*.json"]
+"share/rammp_adl/config" = ["config/*.json"]
+"share/rammp_adl/examples" = ["examples/*.json"]
+"share/rammp_adl/tools" = ["tools/check_design.py"]
+"share/rammp_adl/simulation" = ["simulation/rolling_scene.xml", "simulation/README.md"]
+"share/rammp_adl/simulation/vendor/kinova_gen3" = ["simulation/vendor/kinova_gen3/*.xml", "simulation/vendor/kinova_gen3/SOURCE.md", "simulation/vendor/kinova_gen3/LICENSE"]
+"share/rammp_adl/simulation/vendor/kinova_gen3/assets" = ["simulation/vendor/kinova_gen3/assets/*.stl"]

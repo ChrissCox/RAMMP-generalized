@@ -1,0 +1,6 @@
+{
+  "marker_id": 0,
+  "dictionary": "DICT_4X4_50",
+  "nominal_black_edge_m": 0.05,
+  "size_source": "50 mm label on the fiducial supplied by the user; physical print size unverified"
+}

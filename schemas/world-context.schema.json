@@ -1,0 +1,1539 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "snapshot_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "execution_epoch": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "collision_revision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "base_epoch": {
+      "type": "string",
+      "minLength": 1
+    },
+    "calibration_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "robot_config_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "attachment_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "entities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "entity_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "entity_revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "pose_roles": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "pregrasp",
+                "grasp",
+                "staging",
+                "viewpoint",
+                "placement",
+                "retract"
+              ]
+            }
+          },
+          "facts": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "predicate": {
+                      "const": "entity_exists"
+                    },
+                    "args": {
+                      "type": "object",
+                      "properties": {
+                        "entity_id": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "entity_id"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "validity": {
+                      "enum": [
+                        "true",
+                        "false",
+                        "unknown"
+                      ]
+                    },
+                    "evidence_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "age_s": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "predicate",
+                    "args",
+                    "validity",
+                    "evidence_id",
+                    "age_s"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "predicate": {
+                      "const": "held_state"
+                    },
+                    "args": {
+                      "type": "object",
+                      "properties": {
+                        "robot_id": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "robot_id"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "validity": {
+                      "enum": [
+                        "true",
+                        "false",
+                        "unknown"
+                      ]
+                    },
+                    "evidence_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "age_s": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "predicate",
+                    "args",
+                    "validity",
+                    "evidence_id",
+                    "age_s"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "predicate": {
+                      "const": "observation_valid"
+                    },
+                    "args": {
+                      "type": "object",
+                      "properties": {
+                        "entity_id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "purpose": {
+                          "enum": [
+                            "pose",
+                            "articulation",
+                            "state",
+                            "grasp",
+                            "food"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "entity_id",
+                        "purpose"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "validity": {
+                      "enum": [
+                        "true",
+                        "false",
+                        "unknown"
+                      ]
+                    },
+                    "evidence_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "age_s": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "predicate",
+                    "args",
+                    "validity",
+                    "evidence_id",
+                    "age_s"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "predicate": {
+                      "const": "pose_valid"
+                    },
+                    "args": {
+                      "type": "object",
+                      "properties": {
+                        "entity_id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "pose_role": {
+                          "enum": [
+                            "object",
+                            "pregrasp",
+                            "grasp",
+                            "staging",
+                            "viewpoint",
+                            "placement",
+                            "retract"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "entity_id",
+                        "pose_role"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "validity": {
+                      "enum": [
+                        "true",
+                        "false",
+                        "unknown"
+                      ]
+                    },
+                    "evidence_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "age_s": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "predicate",
+                    "args",
+                    "validity",
+                    "evidence_id",
+                    "age_s"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "predicate": {
+                      "const": "motion_profile_valid"
+                    },
+                    "args": {
+                      "type": "object",
+                      "properties": {
+                        "profile_id": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "profile_id"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "validity": {
+                      "enum": [
+                        "true",
+                        "false",
+                        "unknown"
+                      ]
+                    },
+                    "evidence_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "age_s": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "predicate",
+                    "args",
+                    "validity",
+                    "evidence_id",
+                    "age_s"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "predicate": {
+                      "const": "at_pose"
+                    },
+                    "args": {
+                      "type": "object",
+                      "properties": {
+                        "entity_id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "pose_role": {
+                          "enum": [
+                            "object",
+                            "pregrasp",
+                            "grasp",
+                            "staging",
+                            "viewpoint",
+                            "placement",
+                            "retract"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "entity_id",
+                        "pose_role"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "validity": {
+                      "enum": [
+                        "true",
+                        "false",
+                        "unknown"
+                      ]
+                    },
+                    "evidence_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "age_s": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "predicate",
+                    "args",
+                    "validity",
+                    "evidence_id",
+                    "age_s"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "predicate": {
+                      "const": "gripper_empty"
+                    },
+                    "args": {
+                      "type": "object",
+                      "properties": {
+                        "robot_id": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "robot_id"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "validity": {
+                      "enum": [
+                        "true",
+                        "false",
+                        "unknown"
+                      ]
+                    },
+                    "evidence_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "age_s": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "predicate",
+                    "args",
+                    "validity",
+                    "evidence_id",
+                    "age_s"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "predicate": {
+                      "const": "aperture_reached"
+                    },
+                    "args": {
+                      "type": "object",
+                      "properties": {
+                        "aperture_m": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 0.2
+                        }
+                      },
+                      "required": [
+                        "aperture_m"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "validity": {
+                      "enum": [
+                        "true",
+                        "false",
+                        "unknown"
+                      ]
+                    },
+                    "evidence_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "age_s": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "predicate",
+                    "args",
+                    "validity",
+                    "evidence_id",
+                    "age_s"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "predicate": {
+                      "const": "at_grasp_pose"
+                    },
+                    "args": {
+                      "type": "object",
+                      "properties": {
+                        "entity_id": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "entity_id"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "validity": {
+                      "enum": [
+                        "true",
+                        "false",
+                        "unknown"
+                      ]
+                    },
+                    "evidence_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "age_s": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "predicate",
+                    "args",
+                    "validity",
+                    "evidence_id",
+                    "age_s"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "predicate": {
+                      "const": "holding"
+                    },
+                    "args": {
+                      "type": "object",
+                      "properties": {
+                        "entity_id": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "entity_id"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "validity": {
+                      "enum": [
+                        "true",
+                        "false",
+                        "unknown"
+                      ]
+                    },
+                    "evidence_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "age_s": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "predicate",
+                    "args",
+                    "validity",
+                    "evidence_id",
+                    "age_s"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "predicate": {
+                      "const": "support_verified"
+                    },
+                    "args": {
+                      "type": "object",
+                      "properties": {
+                        "entity_id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "support_id": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "entity_id",
+                        "support_id"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "validity": {
+                      "enum": [
+                        "true",
+                        "false",
+                        "unknown"
+                      ]
+                    },
+                    "evidence_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "age_s": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "predicate",
+                    "args",
+                    "validity",
+                    "evidence_id",
+                    "age_s"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "predicate": {
+                      "const": "at_release_pose"
+                    },
+                    "args": {
+                      "type": "object",
+                      "properties": {
+                        "entity_id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "support_id": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "entity_id",
+                        "support_id"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "validity": {
+                      "enum": [
+                        "true",
+                        "false",
+                        "unknown"
+                      ]
+                    },
+                    "evidence_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "age_s": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "predicate",
+                    "args",
+                    "validity",
+                    "evidence_id",
+                    "age_s"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "predicate": {
+                      "const": "released"
+                    },
+                    "args": {
+                      "type": "object",
+                      "properties": {
+                        "entity_id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "support_id": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "entity_id",
+                        "support_id"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "validity": {
+                      "enum": [
+                        "true",
+                        "false",
+                        "unknown"
+                      ]
+                    },
+                    "evidence_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "age_s": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "predicate",
+                    "args",
+                    "validity",
+                    "evidence_id",
+                    "age_s"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "predicate": {
+                      "const": "constraint_valid"
+                    },
+                    "args": {
+                      "type": "object",
+                      "properties": {
+                        "constraint_id": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "constraint_id"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "validity": {
+                      "enum": [
+                        "true",
+                        "false",
+                        "unknown"
+                      ]
+                    },
+                    "evidence_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "age_s": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "predicate",
+                    "args",
+                    "validity",
+                    "evidence_id",
+                    "age_s"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "predicate": {
+                      "const": "contact_ready"
+                    },
+                    "args": {
+                      "type": "object",
+                      "properties": {
+                        "entity_id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "constraint_id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "profile_id": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "entity_id",
+                        "constraint_id",
+                        "profile_id"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "validity": {
+                      "enum": [
+                        "true",
+                        "false",
+                        "unknown"
+                      ]
+                    },
+                    "evidence_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "age_s": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "predicate",
+                    "args",
+                    "validity",
+                    "evidence_id",
+                    "age_s"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "predicate": {
+                      "const": "constraint_goal_verified"
+                    },
+                    "args": {
+                      "type": "object",
+                      "properties": {
+                        "constraint_id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "target_value": {
+                          "type": "number"
+                        },
+                        "target_unit": {
+                          "enum": [
+                            "m",
+                            "rad"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "constraint_id",
+                        "target_value",
+                        "target_unit"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "validity": {
+                      "enum": [
+                        "true",
+                        "false",
+                        "unknown"
+                      ]
+                    },
+                    "evidence_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "age_s": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "predicate",
+                    "args",
+                    "validity",
+                    "evidence_id",
+                    "age_s"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "age_s": {
+            "type": "number",
+            "minimum": 0
+          },
+          "position_validity": {
+            "enum": [
+              "true",
+              "false",
+              "unknown"
+            ]
+          },
+          "orientation_validity": {
+            "enum": [
+              "true",
+              "false",
+              "unknown"
+            ]
+          },
+          "source_ids": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "required": [
+          "entity_id",
+          "label",
+          "entity_revision",
+          "pose_roles",
+          "facts",
+          "confidence",
+          "age_s",
+          "position_validity",
+          "orientation_validity",
+          "source_ids"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "constraints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "constraint_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "entity_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "enum": [
+              "revolute",
+              "prismatic",
+              "helical",
+              "planar"
+            ]
+          },
+          "unit": {
+            "enum": [
+              "m",
+              "rad"
+            ]
+          },
+          "minimum": {
+            "type": "number"
+          },
+          "maximum": {
+            "type": "number"
+          },
+          "validity": {
+            "enum": [
+              "true",
+              "false",
+              "unknown"
+            ]
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        },
+        "required": [
+          "constraint_id",
+          "entity_id",
+          "kind",
+          "unit",
+          "minimum",
+          "maximum",
+          "validity",
+          "confidence"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "profiles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "profile_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "safety_class": {
+            "enum": [
+              "transit",
+              "gripper",
+              "contact",
+              "human"
+            ]
+          },
+          "simulation_only": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "profile_id",
+          "safety_class",
+          "simulation_only"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "available_skills": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "observe",
+          "move_to_pose",
+          "set_gripper",
+          "grasp",
+          "release",
+          "follow_constraint"
+        ]
+      }
+    },
+    "hazards": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "completed_nodes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "goal": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "const": "entity_exists"
+            },
+            "args": {
+              "type": "object",
+              "properties": {
+                "entity_id": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "entity_id"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "predicate",
+            "args"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "const": "held_state"
+            },
+            "args": {
+              "type": "object",
+              "properties": {
+                "robot_id": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "robot_id"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "predicate",
+            "args"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "const": "observation_valid"
+            },
+            "args": {
+              "type": "object",
+              "properties": {
+                "entity_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "purpose": {
+                  "enum": [
+                    "pose",
+                    "articulation",
+                    "state",
+                    "grasp",
+                    "food"
+                  ]
+                }
+              },
+              "required": [
+                "entity_id",
+                "purpose"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "predicate",
+            "args"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "const": "pose_valid"
+            },
+            "args": {
+              "type": "object",
+              "properties": {
+                "entity_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "pose_role": {
+                  "enum": [
+                    "object",
+                    "pregrasp",
+                    "grasp",
+                    "staging",
+                    "viewpoint",
+                    "placement",
+                    "retract"
+                  ]
+                }
+              },
+              "required": [
+                "entity_id",
+                "pose_role"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "predicate",
+            "args"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "const": "motion_profile_valid"
+            },
+            "args": {
+              "type": "object",
+              "properties": {
+                "profile_id": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "profile_id"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "predicate",
+            "args"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "const": "at_pose"
+            },
+            "args": {
+              "type": "object",
+              "properties": {
+                "entity_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "pose_role": {
+                  "enum": [
+                    "object",
+                    "pregrasp",
+                    "grasp",
+                    "staging",
+                    "viewpoint",
+                    "placement",
+                    "retract"
+                  ]
+                }
+              },
+              "required": [
+                "entity_id",
+                "pose_role"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "predicate",
+            "args"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "const": "gripper_empty"
+            },
+            "args": {
+              "type": "object",
+              "properties": {
+                "robot_id": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "robot_id"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "predicate",
+            "args"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "const": "aperture_reached"
+            },
+            "args": {
+              "type": "object",
+              "properties": {
+                "aperture_m": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 0.2
+                }
+              },
+              "required": [
+                "aperture_m"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "predicate",
+            "args"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "const": "at_grasp_pose"
+            },
+            "args": {
+              "type": "object",
+              "properties": {
+                "entity_id": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "entity_id"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "predicate",
+            "args"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "const": "holding"
+            },
+            "args": {
+              "type": "object",
+              "properties": {
+                "entity_id": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "entity_id"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "predicate",
+            "args"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "const": "support_verified"
+            },
+            "args": {
+              "type": "object",
+              "properties": {
+                "entity_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "support_id": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "entity_id",
+                "support_id"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "predicate",
+            "args"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "const": "at_release_pose"
+            },
+            "args": {
+              "type": "object",
+              "properties": {
+                "entity_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "support_id": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "entity_id",
+                "support_id"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "predicate",
+            "args"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "const": "released"
+            },
+            "args": {
+              "type": "object",
+              "properties": {
+                "entity_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "support_id": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "entity_id",
+                "support_id"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "predicate",
+            "args"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "const": "constraint_valid"
+            },
+            "args": {
+              "type": "object",
+              "properties": {
+                "constraint_id": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "constraint_id"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "predicate",
+            "args"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "const": "contact_ready"
+            },
+            "args": {
+              "type": "object",
+              "properties": {
+                "entity_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "constraint_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "profile_id": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "entity_id",
+                "constraint_id",
+                "profile_id"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "predicate",
+            "args"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "const": "constraint_goal_verified"
+            },
+            "args": {
+              "type": "object",
+              "properties": {
+                "constraint_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "target_value": {
+                  "type": "number"
+                },
+                "target_unit": {
+                  "enum": [
+                    "m",
+                    "rad"
+                  ]
+                }
+              },
+              "required": [
+                "constraint_id",
+                "target_value",
+                "target_unit"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "predicate",
+            "args"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "grasp_state_id": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": [
+    "schema_version",
+    "task_id",
+    "snapshot_id",
+    "execution_epoch",
+    "revision",
+    "collision_revision",
+    "base_epoch",
+    "calibration_id",
+    "robot_config_id",
+    "attachment_id",
+    "entities",
+    "constraints",
+    "profiles",
+    "available_skills",
+    "hazards",
+    "completed_nodes",
+    "goal",
+    "grasp_state_id"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}
