@@ -32,6 +32,10 @@ BENCH = ROOT/"artifacts/bench"
 PIN = Path(os.environ.get("RAMMP_BENCH_PIN", Path.home()/".config/rammp-bench/frozen.json"))
 MANIFEST_DIR = Path(os.environ.get("RAMMP_SHEPPY_DIR", "/home/abra/rammp-deployments/december_2026"))
 NODE_LOGS = Path.home()/".sheppy/logs/adl"
+# The sheppy manifest starts the node from the directory this file names, so a run in a
+# research worktree tests that worktree's code. It names the main checkout between runs.
+ACTIVE_ROOT = Path.home()/".config/rammp-bench/active-root"
+MAIN_ROOT = Path(os.environ.get("RAMMP_MAIN_ROOT", "/home/abra/RAMMP-generalized"))
 TASK = os.environ.get("RAMMP_BENCH_TASK", "open the cabinet door in front of you")
 
 # What stands between an experiment and the arm. An experiment that needs one of
@@ -256,7 +260,12 @@ def hardware(args):
     if not wait_for_go(args.go_timeout_s):
         return emit({"tier": "hardware", "score": 0., "status": "operator_absent", "moved": False,
                      "reason": "no operator GO; nothing was sent to the arm"})
-    ready, detail, log = restart_node()
+    ACTIVE_ROOT.parent.mkdir(parents=True, exist_ok=True)
+    ACTIVE_ROOT.write_text(str(ROOT)+"\n")
+    try:
+        ready, detail, log = restart_node()
+    finally:
+        ACTIVE_ROOT.write_text(str(MAIN_ROOT)+"\n")            # the next plain restart is the main checkout again
     if not ready:
         return emit({"tier": "hardware", "score": 0., "status": "node_failed_to_start", "reason": detail, "moved": False})
     stack = Stack()

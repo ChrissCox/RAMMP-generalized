@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 2,
+  "goal": "Make the typed task 'open the cabinet door in front of you' succeed on the real Kinova Gen3 bench, reliably and fast, without hardcoding this cabinet, within the safety scope of docs/auto-research.md.",
+  "projectPath": "",
+  "scope": {
+    "editable": [
+      "rammp_adl/",
+      "skills/adl_skill_library.yaml",
+      "schemas/",
+      "tests/",
+      "docs/"
+    ],
+    "protected": [
+      "onyx/setup.json",
+      "onyx/validation.json",
+      "onyx/onyx.md",
+      "onyx/tools/",
+      "rammp_adl/safety.py",
+      "rammp_adl/motion/collision_guard.py",
+      "rammp_adl/motion/sheppy_client.py",
+      "rammp_adl/motion/sheppy_arm.py",
+      "config/",
+      "tools/bench_eval.py",
+      "AGENTS.md",
+      "docs/auto-research.md"
+    ]
+  },
+  "metric": {
+    "name": "score",
+    "unit": "points",
+    "direction": "maximize"
+  },
+  "resources": {
+    "arm": {
+      "description": "The one physical Kinova Gen3 and its sheppy adl node."
+    }
+  },
+  "tools": {
+    "evaluation.run": {
+      "description": "One attended hardware run of the door task: operator GO, node restart on this worktree, reset, task, stage score.",
+      "command": "bash",
+      "args": [
+        "onyx/tools/evaluation/run.sh"
+      ],
+      "shell": false,
+      "cwd": "project",
+      "env": {},
+      "resources": [
+        "arm"
+      ],
+      "timeoutSeconds": 2400,
+      "leaseTimeoutSeconds": 2700,
+      "outputLimitBytes": 8000,
+      "fingerprintPaths": [
+        "onyx/tools",
+        "tools/bench_eval.py",
+        "config/sheppy-bench.context.json",
+        "config/reasoning.json"
+      ]
+    },
+    "guard.offline": {
+      "description": "No-motion guardrail: pinned safety files, unit tests, design check, live plan-only through every send gate.",
+      "command": "bash",
+      "args": [
+        "onyx/tools/guard/run.sh"
+      ],
+      "shell": false,
+      "cwd": "project",
+      "env": {},
+      "resources": [
+        "arm"
+      ],
+      "timeoutSeconds": 900,
+      "leaseTimeoutSeconds": 1200,
+      "outputLimitBytes": 8000,
+      "fingerprintPaths": [
+        "onyx/tools",
+        "tools/bench_eval.py",
+        "config/sheppy-bench.context.json",
+        "config/reasoning.json"
+      ]
+    }
+  },
+  "workflow": [
+    {
+      "id": "edit",
+      "agent": "Read docs/auto-research.md and the last run's first_failure and node_log_tail. Make one scoped change with its unit test, commit it, then resume.",
+      "optional": false
+    },
+    {
+      "id": "guard",
+      "run": "guard.offline",
+      "optional": false,
+      "guardrail": true
+    },
+    {
+      "id": "evaluate",
+      "run": "evaluation.run",
+      "metric": true,
+      "optional": false
+    }
+  ]
+}

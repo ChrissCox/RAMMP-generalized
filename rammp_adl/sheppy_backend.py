@@ -367,6 +367,12 @@ class SheppyArmBackend:
         receipt = await self.client.execute(trajectory, cancel_event=context.cancel_event, guard=guard)
         self.log(f"{context.node_id}: {safety_class} move {trajectory.duration_s:.1f} s, {len(trajectory.points)} points: "
                  f"{receipt['status']} {receipt['message'][:120]}")
+        if receipt["status"] != "succeeded":
+            # A cancelled goal leaves the arm decelerating. The failure is reported from a still arm:
+            # returning sooner reads as a handler that left its own motion running, which latches a fault.
+            settle = getattr(self.client, "settle", None)
+            if settle is not None:
+                await settle(timeout_s=3.)
         if receipt["status"] == "cancelled":
             raise BackendFailure("cancelled", receipt["message"])
         if receipt["status"] == "guard_trip":
@@ -715,6 +721,8 @@ class SheppyArmBackend:
                 effort = getattr(guard, "effort", None)
                 if effort is not None:
                     peak = max(peak, float(getattr(effort, "peak_nm", 0.)))
+                if receipt["status"] != "succeeded" and getattr(self.client, "settle", None) is not None:
+                    await self.client.settle(timeout_s=3.)     # report the stop from a still arm
                 steps.append({"value": value, "status": receipt["status"], "planning": planning,
                               "trajectory_digest": trajectory.digest})
                 self.log(f"follow {constraint_id}: {value:.3f}/{target:.3f} {record['unit']} {receipt['status']} "
