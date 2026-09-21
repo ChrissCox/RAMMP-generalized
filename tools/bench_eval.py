@@ -70,8 +70,10 @@ def score_run(result, attempt=None):
     nodes = result.get("nodes", [])
     done = [n for n in nodes if n.get("status") == "succeeded"]
     moves = [n for n in done if n.get("skill") == "move_to_pose"]
+    # Arriving at the handle is a completed move to the grasp role, however many other moves a replan added.
     reached = {"intake": result.get("goal") is not None, "planned": bool(nodes), "standoff": len(moves) >= 1,
-               "at_handle": len(moves) >= 2, "grasped": any(n.get("skill") == "grasp" for n in done),
+               "at_handle": any(n.get("pose_role") == "grasp" for n in moves),
+               "grasped": any(n.get("skill") == "grasp" for n in done),
                "released": any(n.get("skill") == "release" for n in done)}
     fraction = 0.
     if attempt and attempt.get("target"):

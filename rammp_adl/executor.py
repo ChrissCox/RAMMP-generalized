@@ -22,6 +22,7 @@ class NodeResult:
     commit_receipt: str = ""
     backend_quiescent: bool = False
     skill: str = ""
+    pose_role: str = ""
 
 
 @dataclass
@@ -372,6 +373,7 @@ class DagExecutor:
                         node_id = active.pop(work)
                         result = work.result()
                         result.skill = nodes[node_id]["skill"]
+                        result.pose_role = (nodes[node_id]["args"].get("target") or {}).get("pose_role", "")
                         # Release only after the coroutine has reconciled measured terminal state.
                         if result.backend_quiescent:
                             self.resources.release(node_id)

@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "status": "warning",
-  "setupHash": "sha256:158d43b6e0b614fe21537acb00ff323dac3e7b77920fd43e814ad12ff7081a17",
-  "generatedAt": "2026-09-21T19:31:01.004Z",
+  "status": "passed",
+  "setupHash": "sha256:80047040e8a220c63875c453f3614b45d45d3dfa804b38ce1c62a1dc32644530",
+  "generatedAt": "2026-09-21T20:07:01.936Z",
   "checks": [
     {
       "id": "setup_schema",
@@ -31,14 +31,14 @@
     {
       "id": "metric_tool_readiness",
       "status": "passed",
-      "message": "Metric tool evaluation.run emitted primary METRIC score=17.5.",
+      "message": "Metric tool evaluation.run emitted primary METRIC score=50.",
       "evidence": {
         "toolId": "evaluation.run",
         "exitCode": 0,
         "timedOut": false,
         "primaryMetric": {
           "name": "score",
-          "value": 17.5
+          "value": 50
         },
         "secondaryMetricNames": [
           "duration_s",
@@ -46,8 +46,8 @@
           "safety_fault",
           "task_replans"
         ],
-        "outputSummary": "{\"at_utc\": \"2026-09-21T19:31:00Z\", \"tier\": \"hardware\", \"score\": 17.5, \"status\": \"safety_fault\", \"reason\": \"STOP_UNVERIFIED\", \"stages\": {\"intake\": true, \"planned\": true, \"standoff\": true, \"at_handle\": false, \"grasped\": false, \"released\": false}, \"followed_fraction\": 0.0, \"safety_fault\": true, \"task_replans\": 0, \"first_failure\": {\"node_id\": \"n3\", \"skill\": \"move_to_pose\", \"failure_code\": \"runtime_error\", \"detail\": \"Handler returned before owned backend commands became quiescent\"}, \"duration_s\": 65.7, \"phases\": [\"INTAKE_STARTING\", \"INTAKE_WAITING_FOR_REFRESH\", \"INTAKE_DISCOVERING\", \"INTAKE_PROPOSING_CONSTRAINT\", \"INTAKE_BOOTSTRAP\", \"INTAKE_OBSERVING\", \"INTAKE_NORMALIZING_GOAL\", \"RUNNING\"], \"task\": \"open the cabinet door in front of you\", \"task_id\": \"task-20260921T192955Z-7461bf\", \"reset\": {\"ok\": true, \"detail\": \"already at the start pose\", \"gripper\": \"at target\"}, \"node_log_tail\": [\"grounded scene: {\\\"camera_id\\\": \\\"wrist_d405\\\", \\\"face_screen\\\": true, \\\"entities\\\": {}}\", \"sheppy client runtime ready; available skills: observe, move_to_pose, set_gripper, grasp, release, follow_constraint; motion armed=True\", \"safety status: reason='STARTUP' fault_latched=False motion_allowed=True\", \"robot facts bootstrapped: [{'predicate': 'held_state', 'args': {'robot_id': 'robot'}, 'validity': 'true'}, {'predicate': 'gripper_empty', 'args': {'robot_id': 'robot'}, 'validity': 'true'}]\", \"scene refresh (initial, OK): ['door_1', 'door_handle_1', 'cardboard_box_1']\", \"task task-20260921T192955Z-7461bf: discovery OK in keyframe ros-rgbd-a95b041d0d784ca4ac94cea88c5978f5 (saved under artifacts/keyframes): {\\\"door_1\\\": {\\\"kind\\\": \\\"surface\\\", \\\"attached_to\\\": \\\"\\\", \\\"grasp\\\": \\\"none\\\", \\\"surface_width_m\\\": 0.262}, \\\"door_han\", \"task task-20260921T192955Z-7461bf: constraint {\\\"constraint_id\\\": \\\"door_constraint\\\", \\\"kind\\\": \\\"revolute\\\", \\\"hinge_side\\\": \\\"left\\\", \\\"opening\\\": \\\"pull\\\", \\\"door_width_m\\\": 0.23753, \\\"contact_effort_nm\\\": 5.0, \\\"parameters_version\\\": 3, \\\"measured_door\\\": {\\\"e\", \"task task-20260921T192955Z-7461bf: poses observed for ['door_handle_1']; skipped {'cardboard_box_1': 'no pose roles', 'door_1': 'no pose roles'}\", \"task task-20260921T192955Z-7461bf: goal {\\\"args\\\": {\\\"constraint_id\\\": \\\"door_constraint\\\", \\\"target_unit\\\": \\\"rad\\\", \\\"target_value\\\": 1.57}, \\\"predicate\\\": \\\"constraint_goal_verified\\\"}; visible ['cardboard_box_1', 'door_1', 'door_handle_1']\", \"confirmed set_gripper node n1 under operator arming; digest 0c579b7625040948\", \"confirmed move_to_pose node n2 under operator arming; digest 54eebb989f6ff9ed\", \"n2: transit move 1.6 s, 32 points: succeeded SUCCESSFUL\", \"confirmed move_to_pose node n3 under operator arming; digest 469fbefec9e32171\", \"align door_handle_1 look 1/5: OK {\\\"status\\\": \\\"MOVE\\\", \\\"delta_camera_m\\\": [-0.004, -0.006, 0.0052], \\\"yaw_deg\\\": 0.0} Shift slightly left and up to centre the vertical handle between fingertips.\", \"n3: contact move 2.5 s, 32 points: succeeded SUCCESSFUL\", \"align door_handle_1 look 2/5: OK {\\\"status\\\":\nMETRIC score=17.5\nMETRIC duration_s=65.7\nMETRIC followed_fraction=0.0\nMETRIC task_replans=0\nMETRIC safety_fault=1\n--- stderr ---\nwaiting for the operator: close the door, stand at the e-stop, then `python tools/bench_eval.py go` (up to 900 s)",
-        "checkedAt": "2026-09-21T19:31:00.999Z",
+        "outputSummary": "{\"at_utc\": \"2026-09-21T20:07:01Z\", \"tier\": \"hardware\", \"score\": 50.0, \"status\": \"incomplete\", \"reason\": \"stale_state repeated after a replan: guard tripped (collision); goal cancelled, driver holds\", \"stages\": {\"intake\": true, \"planned\": true, \"standoff\": true, \"at_handle\": true, \"grasped\": false, \"released\": false}, \"followed_fraction\": 0.0, \"safety_fault\": false, \"task_replans\": 1, \"first_failure\": {\"node_id\": \"contact\", \"skill\": \"move_to_pose\", \"failure_code\": \"stale_state\", \"detail\": \"guard tripped (collision); goal cancelled, driver holds\"}, \"duration_s\": 86.9, \"phases\": [\"INTAKE_STARTING\", \"INTAKE_WAITING_FOR_REFRESH\", \"INTAKE_DISCOVERING\", \"INTAKE_PROPOSING_CONSTRAINT\", \"INTAKE_BOOTSTRAP\", \"INTAKE_OBSERVING\", \"INTAKE_NORMALIZING_GOAL\", \"RUNNING\"], \"task\": \"open the cabinet door in front of you\", \"task_id\": \"task-20260921T200535Z-28e89f\", \"reset\": {\"ok\": true, \"detail\": \"already at the start pose\", \"gripper\": \"at target\"}, \"node_log_tail\": [\"grounded scene: {\\\"camera_id\\\": \\\"wrist_d405\\\", \\\"face_screen\\\": true, \\\"entities\\\": {}}\", \"sheppy client runtime ready; available skills: observe, move_to_pose, set_gripper, grasp, release, follow_constraint; motion armed=True\", \"safety status: reason='STARTUP' fault_latched=False motion_allowed=True\", \"robot facts bootstrapped: [{'predicate': 'held_state', 'args': {'robot_id': 'robot'}, 'validity': 'true'}, {'predicate': 'gripper_empty', 'args': {'robot_id': 'robot'}, 'validity': 'true'}]\", \"scene refresh (initial, OK): ['door_1', 'door_handle_1']\", \"task task-20260921T200535Z-28e89f: discovery OK in keyframe ros-rgbd-b2c9a52305f34bc895122a994d038805 (saved under artifacts/keyframes): {\\\"door_1\\\": {\\\"kind\\\": \\\"surface\\\", \\\"attached_to\\\": \\\"\\\", \\\"grasp\\\": \\\"none\\\", \\\"surface_width_m\\\": 0.261}, \\\"door_han\", \"task task-20260921T200535Z-28e89f: constraint {\\\"constraint_id\\\": \\\"door_constraint\\\", \\\"kind\\\": \\\"revolute\\\", \\\"hinge_side\\\": \\\"left\\\", \\\"opening\\\": \\\"pull\\\", \\\"door_width_m\\\": 0.23760268806200308, \\\"contact_effort_nm\\\": 5.0, \\\"parameters_version\\\": 4, \\\"measure\", \"task task-20260921T200535Z-28e89f: poses observed for ['door_handle_1']; skipped {'door_1': 'no pose roles'}\", \"task task-20260921T200535Z-28e89f: goal {\\\"args\\\": {\\\"constraint_id\\\": \\\"door_constraint\\\", \\\"target_unit\\\": \\\"rad\\\", \\\"target_value\\\": 1.57}, \\\"predicate\\\": \\\"constraint_goal_verified\\\"}; visible ['door_1', 'door_handle_1']\", \"confirmed move_to_pose node approach under operator arming; digest 71269cfd203a94dd\", \"approach: transit move 1.6 s, 32 points: succeeded SUCCESSFUL\", \"confirmed move_to_pose node contact under operator arming; digest 2cb6073c73110e89\", \"align door_handle_1 look 1/5: OK {\\\"status\\\": \\\"DONE\\\"} The vertical door handle is centred between the fingertips; horizontal closure suits its narrow side.\", \"contact: transit move 1.6 s, 32 points: guard_trip guard tripped (collision); goal cancelled, driver holds\", \"stop requested: stale_state fault=False\", \"safety status: reason='HELD' fault_latched=False motion_all\nMETRIC score=50.0\nMETRIC duration_s=86.9\nMETRIC followed_fraction=0.0\nMETRIC task_replans=1\nMETRIC safety_fault=0\n--- stderr ---\nwaiting for the operator: close the door, stand at the e-stop, then `python tools/bench_eval.py go` (up to 900 s)",
+        "checkedAt": "2026-09-21T20:07:01.932Z",
         "error": null
       }
     },
@@ -80,17 +80,7 @@
       "status": "passed",
       "message": "onyx/tools/guard/run.sh exists.",
       "evidence": {}
-    },
-    {
-      "id": "reliability_warning",
-      "status": "warning",
-      "message": "Workflow check step guard are not marked as guardrails. Set guardrail=true when failure must reject a metric win.",
-      "evidence": {
-        "workflowStepIds": [
-          "guard"
-        ]
-      }
     }
   ],
-  "summary": "Setup checks passed with warnings."
+  "summary": "Setup checks passed."
 }

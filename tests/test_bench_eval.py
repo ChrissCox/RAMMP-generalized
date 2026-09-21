@@ -16,6 +16,10 @@ def node(skill, status="succeeded", **extra):
     return {"node_id": skill, "skill": skill, "status": status, **extra}
 
 
+def grasp_move(status="succeeded", **extra):
+    return node("move_to_pose", status, pose_role="grasp", **extra)
+
+
 GOAL = {"predicate": "constraint_goal_verified", "args": {}}
 
 
@@ -23,15 +27,15 @@ class ScoreTests(unittest.TestCase):
     def test_a_declined_task_scores_nothing_and_a_full_run_scores_everything(self):
         self.assertEqual(bench.score_run({"status": "incomplete", "goal": None, "nodes": []})["score"], 0.)
         full = {"status": "succeeded", "goal": GOAL, "nodes": [node("observe"), node("move_to_pose"), node("set_gripper"),
-                                                               node("move_to_pose"), node("grasp"), node("follow_constraint"), node("release")]}
+                                                               grasp_move(), node("grasp"), node("follow_constraint"), node("release")]}
         self.assertEqual(bench.score_run(full)["score"], 100.)
 
     def test_progress_is_credited_by_stage_and_by_how_far_the_part_was_followed(self):
-        standoff = {"status": "incomplete", "goal": GOAL, "nodes": [node("move_to_pose"), node("move_to_pose", "failed", failure_code="planning_failed", detail="x")]}
+        standoff = {"status": "incomplete", "goal": GOAL, "nodes": [node("move_to_pose"), node("move_to_pose"), grasp_move("failed", failure_code="planning_failed", detail="x")]}
         scored = bench.score_run(standoff)
         self.assertEqual(scored["score"], 35.)
         self.assertEqual(scored["first_failure"]["failure_code"], "planning_failed")
-        partway = {"status": "incomplete", "goal": GOAL, "nodes": [node("move_to_pose"), node("move_to_pose"), node("grasp"),
+        partway = {"status": "incomplete", "goal": GOAL, "nodes": [node("move_to_pose"), grasp_move(), node("grasp"),
                                                                    node("follow_constraint", "failed", failure_code="model_mismatch")]}
         scored = bench.score_run(partway, {"target": 1.5, "achieved": .5})
         self.assertEqual(scored["followed_fraction"], .333)
