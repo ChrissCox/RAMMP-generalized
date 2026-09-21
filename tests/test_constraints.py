@@ -6,8 +6,8 @@ import unittest
 import numpy as np
 
 from rammp_adl.constraints import (ConstraintStore, apply_parameters, context_constraint, history_summary,
-                                   image_axes, metric_constraint, next_parameters, record_attempt, rotation_about,
-                                   waypoints)
+                                   contact_face_exclusions, image_axes, metric_constraint, next_parameters, record_attempt,
+                                   rotation_about, waypoints)
 from rammp_adl.contracts import ContractError
 from rammp_adl.motion.kinematics import quaternion_matrix
 
@@ -134,3 +134,75 @@ class DemonstrationTests(unittest.TestCase):
             self.assertEqual([c.image_id for c in loaded], ["demo-a", "demo-c"])
             loaded[0].validate_for_egress(max_bytes=200000, max_long_edge=640, allow_face=False)
             self.assertEqual(load_demonstration(store, {"label": "x"}), [])
+
+
+class ContactFaceExclusionTests(unittest.TestCase):
+    """The measured door face is exempt from the depth guard on the final approach only."""
+
+    DOOR = {"entity_id": "cabinet_door_surface", "width_m": .26, "height_m": .60,
+            "handle_offsets_m": {"left": .22, "right": .04, "bottom": .30, "top": .30},
+            "centre_m": [.635, .12, .3]}
+
+    def face(self, **overrides):
+        rec = metric_constraint(PROPOSAL, GEOMETRY, CAMERA, constraint_id="c", entity_id="handle_1",
+                                label="cabinet door", surface_entity_id="cabinet_door_surface",
+                                door={**self.DOOR, **overrides})
+        return rec, contact_face_exclusions(rec, GEOMETRY["centroid_m"])
+
+    def excluded(self, balls, point):
+        return any(np.linalg.norm(np.asarray(point)-np.asarray(centre)) <= radius for centre, radius in balls)
+
+    def test_the_measured_face_is_carried_into_the_record(self):
+        rec, balls = self.face()
+        self.assertEqual(rec["measured_door"]["centre_m"], self.DOOR["centre_m"])
+        self.assertEqual(len(balls), 1)
+
+    def test_the_face_beside_the_handle_is_exempt_and_a_standing_obstacle_is_not(self):
+        _, balls = self.face()
+        plane_x, normal = .635, np.array([-1., 0., 0.])       # the face; in front of it is -x
+        for across in (0., .05, .15, .20):
+            on_face = np.array([plane_x, .1+across, .3])      # measured across from the grasp point
+            self.assertTrue(self.excluded(balls, on_face), f"face point {across} m across should be exempt")
+            # Depth noise on the surface goes with the surface...
+            self.assertTrue(self.excluded(balls, on_face+normal*.015))
+            # ...but anything standing off the face by more than the guard's
+            # own margin is still an obstacle, wherever it is.
+            self.assertFalse(self.excluded(balls, on_face+normal*.036))
+        # Nothing at all is exempt out beyond where the cap closes.
+        self.assertFalse(self.excluded(balls, [plane_x-.001, .1+.31, .3]))
+
+    def test_the_exemption_is_anchored_to_the_plane_not_to_the_grasp_point(self):
+        rec, _ = self.face()
+        (centre, radius), = contact_face_exclusions(rec, GEOMETRY["centroid_m"])
+        # The ball sits behind the face, and its front pole clears the plane by the margin.
+        self.assertAlmostEqual(centre[0]-.635, radius-.035, places=9)
+
+    def test_a_face_that_was_never_measured_earns_no_exemption(self):
+        self.assertEqual(self.face(centre_m=None)[1], [])
+        rec = metric_constraint(PROPOSAL, GEOMETRY, CAMERA, constraint_id="c", entity_id="handle_1",
+                                label="cabinet door", surface_entity_id="s")
+        self.assertNotIn("measured_door", rec)
+        self.assertEqual(contact_face_exclusions(rec, GEOMETRY["centroid_m"]), [])
+
+    def test_a_grasp_point_that_does_not_lie_against_the_face_earns_no_exemption(self):
+        rec, _ = self.face()
+        self.assertEqual(contact_face_exclusions(rec, [.3, .12, .3]), [])      # 33 cm off the face
+        self.assertEqual(contact_face_exclusions(rec, [.7, .12, .3]), [])      # behind it
+
+    def test_a_small_measured_face_shrinks_the_exemption(self):
+        _, balls = self.face(width_m=.06, height_m=.06)
+        self.assertTrue(self.excluded(balls, [.635, .11, .3]))
+        self.assertFalse(self.excluded(balls, [.635, .1+.10, .3]))
+
+    def test_the_backend_finds_the_face_by_the_part_it_belongs_to(self):
+        """The approach looks the record up by the entity it is about to touch; no record, no exemption."""
+        from types import SimpleNamespace
+
+        from rammp_adl.sheppy_backend import SheppyArmBackend
+        rec, expected = self.face()
+        logged = []
+        stub = SimpleNamespace(constraints={rec["constraint_id"]: rec}, log=logged.append)
+        self.assertEqual(SheppyArmBackend._face_exclusions(stub, "handle_1", GEOMETRY["centroid_m"]), expected)
+        self.assertIn("cabinet door", logged[0])
+        self.assertEqual(SheppyArmBackend._face_exclusions(stub, "other_handle", GEOMETRY["centroid_m"]), [])
+        self.assertEqual(len(logged), 1)

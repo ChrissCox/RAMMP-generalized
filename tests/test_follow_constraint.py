@@ -180,6 +180,44 @@ class FollowConstraintTests(unittest.TestCase):
             geometry.validate(bad, snapshot, {"geometry": None}, "admission")
         self.assertIn("contact_monitor", backend.provided_capabilities)
 
+    def test_the_final_approach_also_exempts_the_measured_face_the_handle_stands_on(self):
+        """A pull sits a few centimetres off its door: on the last approach the door is contact, not an obstacle."""
+        from rammp_adl.constraints import FACE_CLEARANCE_M
+        from rammp_adl.world import MetricPose
+        door = {"entity_id": "cabinet_door_surface", "width_m": .26, "height_m": .60, "centre_m": [.635, .12, .3],
+                "handle_offsets_m": {"left": .22, "right": .04, "bottom": .30, "top": .30}}
+        self.record = metric_constraint(PROPOSAL, GEOMETRY, CAMERA, constraint_id="cabinet_door_constraint",
+                                        entity_id="handle_1", label="cabinet door",
+                                        surface_entity_id="cabinet_door_surface", door=door)
+        client = TrackingClient(knuckle=.01)
+        backend, world = self.backend(client)
+        backend.holding_id, backend.current_pose = None, None
+        identities = world.snapshot().identities()
+        authority = world.authorize_source("test_observation", self.catalog.predicates)
+        for role in ("pregrasp", "grasp"):
+            pose = MetricPose("handle_1", role, (.58, .1, .3), (0., 0., 0., 1.), tuple([0.]*36), world.clock(),
+                              "base_link", identities["entity:handle_1"]+1, identities["calibration_id"],
+                              identities["base_epoch"], f"pose-{role}", 60.)
+            world.register_evidence(f"pose-{role}", source=authority, ttl_s=60., observed_at=world.clock(),
+                                    predicates=[{"predicate": "pose_valid", "validity": "true",
+                                                 "args": {"entity_id": "handle_1", "pose_role": role}}])
+            world.update_metric_pose(pose, source=authority)
+        # Standing off is not contact: nothing is exempt on the way in.
+        args = {"target": {"entity_id": "handle_1", "pose_role": "pregrasp"}, "profile_id": "bench_transit"}
+        self.assertEqual(asyncio.run(backend.move_to_pose(args, execution_context(world))).status, "succeeded")
+        self.assertEqual(self.guards[-1]["exclusions"], [])
+        args = {"target": {"entity_id": "handle_1", "pose_role": "grasp"}, "profile_id": "bench_transit"}
+        self.assertEqual(asyncio.run(backend.move_to_pose(args, execution_context(world))).status, "succeeded")
+        exclusions = self.guards[-1]["exclusions"]
+        self.assertEqual(len(exclusions), 2)
+        self.assertEqual(exclusions[0], ((.58, .1, .3), .10))
+        centre, radius = exclusions[1]
+        # The face ball sits behind the measured plane and clears it by the margin, no more.
+        self.assertAlmostEqual(centre[0]-.635, radius-FACE_CLEARANCE_M, places=9)
+        beside = np.array([.635, .1+.12, .3])                       # door surface, 12 cm across from the grasp
+        self.assertLess(np.linalg.norm(beside-np.asarray(centre)), radius)
+        self.assertGreater(np.linalg.norm(beside+np.array([-.06, 0., 0.])-np.asarray(centre)), radius)
+
     def test_grasp_role_moves_exclude_the_target_and_seeding_makes_the_constraint_valid(self):
         client = TrackingClient(knuckle=.01)
         backend, world = self.backend(client)
@@ -195,6 +233,7 @@ class FollowConstraintTests(unittest.TestCase):
         args = {"target": {"entity_id": "handle_1", "pose_role": "grasp"}, "profile_id": "bench_transit"}
         outcome = asyncio.run(backend.move_to_pose(args, execution_context(world)))
         self.assertEqual(outcome.status, "succeeded")
+        # No measured face in the record: the target ball is the whole exemption.
         self.assertEqual(self.guards[-1]["exclusions"], [((.58, .1, .3), .10)])
         self.assertIn("time scaled x2.5", client.sent[-1].provenance)
         # Parked at the handle, the next move away exempts what the fingers are beside, once it has left it no more.

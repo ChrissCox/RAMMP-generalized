@@ -277,6 +277,7 @@ class GroundedScene:
         geometry = surface["surface_geometry"]
         return {"entity_id": surface["entity_id"], "label": surface["label"], "width_m": geometry["width_m"],
                 "height_m": geometry["height_m"], "normal": geometry["normal"], "right": geometry["right"], "up": geometry["up"],
+                "centre_m": geometry["centre_m"],
                 "handle_offsets_m": {"left": float(r+geometry["width_m"]/2.), "right": float(geometry["width_m"]/2.-r),
                                      "bottom": float(u+geometry["height_m"]/2.), "top": float(geometry["height_m"]/2.-u)}}
 
@@ -310,8 +311,9 @@ class GroundedScene:
         r, u = (on-origin) @ right, (on-origin) @ up
         hr, hu = float((position-origin) @ right), float((position-origin) @ up)
         width, height = float(r.max()-r.min()), float(u.max()-u.min())
+        centre = origin+right*float((r.min()+r.max())/2.)+up*float((u.min()+u.max())/2.)
         return {"entity_id": None, "label": handle["attached_to"] or "surface", "width_m": width, "height_m": height,
-                "normal": normal.tolist(), "right": right.tolist(), "up": up.tolist(),
+                "normal": normal.tolist(), "right": right.tolist(), "up": up.tolist(), "centre_m": centre.tolist(),
                 "handle_offsets_m": {"left": float(hr-r.min()), "right": float(r.max()-hr),
                                      "bottom": float(hu-u.min()), "top": float(u.max()-hu)},
                 "source": "dominant plane of the keyframe; may include the frame or a neighbouring door"}

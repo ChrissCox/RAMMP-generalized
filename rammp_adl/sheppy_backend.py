@@ -377,6 +377,12 @@ class SheppyArmBackend:
             raise BackendFailure("cancelled", receipt["message"])
         if receipt["status"] == "guard_trip":
             trip = receipt.get("trip") or {}
+            # Which link, how close, where and when: the receipt carries it as
+            # evidence, and a run cannot be diagnosed from "guard tripped" alone.
+            self.log(f"{context.node_id}: guard trip {trip.get('kind')} "
+                     + " ".join(f"{key}={trip[key]}" for key in
+                                ("link", "distance_m", "margin_m", "time_s", "obstacle_points",
+                                 "deviation_nm", "point_base_m") if key in trip))
             # An obstacle on the remaining path means the collision evidence
             # the plan was admitted against is stale: stop, then replan.
             # Contact, a blind camera or lost state is a supervisor fault.
@@ -524,6 +530,19 @@ class SheppyArmBackend:
         record["shift_m"], record["yaw_rad"] = [float(v) for v in total], float(yaw_total)
         return tuple(float(v) for v in position), tuple(float(v) for v in quaternion_xyzw_from_matrix(rotation)), record
 
+    def _face_exclusions(self, entity_id, grasp_position):
+        """Exempt the measured surface this part is mounted on, from its installed constraint record."""
+        from .constraints import FACE_CLEARANCE_M, FACE_REACH_M, contact_face_exclusions
+        for record in self.constraints.values():
+            if record.get("entity_id") != entity_id:
+                continue
+            balls = contact_face_exclusions(record, grasp_position)
+            if balls:
+                self.log(f"approach {entity_id}: exempting the measured {record.get('label', 'surface')} face, "
+                         f"{FACE_CLEARANCE_M*100:.0f} cm in front of the plane out to {FACE_REACH_M*100:.0f} cm across")
+            return balls
+        return []
+
     def _metric_pose(self, snapshot, entity_id, role):
         pose = snapshot.metric_poses.get((entity_id, role))
         if pose is None:
@@ -553,8 +572,12 @@ class SheppyArmBackend:
             if target["pose_role"] == "grasp":
                 target_position, target_orientation, alignment = await self._look_act(target["entity_id"], pose, context)
             # Arriving at the grasp role means touching the target: depth
-            # points around it are the intended contact, not an obstacle.
-            exclusions = [(tuple(target_position), self.grasp_exclusion_m)] if target["pose_role"] == "grasp" else []
+            # points around it, and the measured face it stands on, are the
+            # intended contact and not an obstacle. This approach only.
+            exclusions = []
+            if target["pose_role"] == "grasp":
+                exclusions = [(tuple(target_position), self.grasp_exclusion_m)]
+                exclusions += self._face_exclusions(target["entity_id"], target_position)
             trajectory, planning, receipt, _ = await self._step_to(target_position, target_orientation, context,
                                                                    safety_class="transit", exclusions=exclusions,
                                                                    announce="move_to_pose")
