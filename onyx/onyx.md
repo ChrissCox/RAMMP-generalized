@@ -26,6 +26,10 @@ Make the typed task `open the cabinet door in front of you` succeed on the real 
 
 `rammp_adl/safety.py`, `rammp_adl/motion/collision_guard.py`, `rammp_adl/motion/sheppy_client.py`, `rammp_adl/motion/sheppy_arm.py`, `config/`, `tools/bench_eval.py`, `AGENTS.md`, `docs/auto-research.md`, `onyx/`. The evaluator also refuses when a pinned file differs from the operator's pin or the node's speed and touch limits are looser than 0.4, 0.25 and 3.0 Nm.
 
+## Operator commands and a halted bench
+
+`bench_eval.py go`, `unattended`, `attended`, `freeze` and `record-start` belong to the operator; never run them. Runs may go unattended under the operator's standing GO. The bench halts itself when a run faults, cannot be reset, returns no result, grasps or moves the door, or the window expires. The evaluator then reports status `halted` without moving. When it does, stop: record `onyx-worker research finish --reason bench_needs_person` with a summary of what the last runs showed. Do not try to clear a halt.
+
 ## Never, whatever the score
 
 Remove or bypass a guard, gate, confirmation or the face screen; raise an effort budget past 15 Nm; hand-written IK, Cartesian servo loops or any motion that is not a validated cuRobo trajectory; send anything but screened keyframes off the machine; weaken a test to pass it; present a fixture, plan-only or mocked result as a robot result.

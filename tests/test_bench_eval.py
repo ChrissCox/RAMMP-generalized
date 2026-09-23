@@ -66,6 +66,29 @@ class GateTests(unittest.TestCase):
             self.assertTrue(bench.wait_for_go(3.))
             self.assertFalse((Path(folder)/"GO").exists())                         # used once
 
+    def test_a_standing_go_expires_and_a_halt_holds_until_the_operator_returns(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        root = Path(folder.name)
+        with patch.object(bench, "BENCH", root), patch.object(bench, "UNATTENDED", root/"unattended-until"), \
+                patch.object(bench, "HALTED", root/"halted"):
+            self.assertFalse(bench.unattended_active())
+            bench.unattended(type("A", (), {"hours": 1.})())
+            self.assertTrue(bench.wait_for_go(.1))                                  # no per-run GO needed
+            bench.end_unattended("the door moved")
+            self.assertFalse(bench.unattended_active())
+            self.assertIn("the door moved", bench.halted())
+            self.assertFalse(bench.wait_for_go(1.2))                                # a person is needed again
+            bench.attended(None)
+            self.assertIsNone(bench.halted())
+            bench.end_unattended("nothing to end")                                  # attended runs never halt
+            self.assertIsNone(bench.halted())
+            (root/"unattended-until").write_text("1.0 long ago")
+            self.assertFalse(bench.unattended_active())
+            self.assertIn("expired", bench.halted())
+            with self.assertRaises(SystemExit):
+                bench.unattended(type("A", (), {"hours": 48.})())
+
 
 if __name__ == "__main__":
     unittest.main()

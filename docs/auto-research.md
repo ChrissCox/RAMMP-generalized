@@ -1,6 +1,6 @@
 # Automatic research on the bench
 
-This is the brief for an automatic research loop (Onyx, or any agent that edits code and measures the result) working on this repository with the real arm. Read [AGENTS.md](../AGENTS.md) first; everything there applies. The operator is present at the e-stop for every run that moves the arm.
+This is the brief for an automatic research loop (Onyx, or any agent that edits code and measures the result) working on this repository with the real arm. Read [AGENTS.md](../AGENTS.md) first; everything there applies. Runs that move the arm are attended by the operator, or run under the operator's standing unattended GO described below.
 
 ## Goal
 
@@ -29,6 +29,8 @@ python tools/bench_eval.py offline --plan      # unit tests, design check, a liv
 3. The command restarts the `adl` node so it loads the experiment's code, reads back the node's speed and effort limits, opens the hand and returns the arm to the recorded start pose through the same planner, gates and effort guard as every skill, then sends the task and scores the result.
 
 Use one worker. There is one arm; two experiments cannot share it.
+
+Unattended: `python tools/bench_eval.py unattended --hours 12` is the operator's standing GO until then; runs then go without step 2. The bench halts itself, until the operator runs `attended` or `unattended` again, the first time a run ends in a safety fault, cannot be reset, returns no result, grasps or moves the door, or the window expires. A halted bench answers every hardware run at once with status `halted` and moves nothing, and a worker that sees it finishes the session. Nobody is at the e-stop in this mode: the guards, the speed and effort limits and the pinned files are the only protection.
 
 ## Scope
 

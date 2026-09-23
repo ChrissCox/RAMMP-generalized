@@ -6,6 +6,15 @@
     python tools/bench_eval.py go                 # operator: the door is closed, I am at the e-stop, run the next one
     python tools/bench_eval.py record-start       # operator: remember the arm's present joints as the start pose
     python tools/bench_eval.py freeze             # operator: pin the safety files an experiment may not change
+    python tools/bench_eval.py unattended --hours 12   # operator: runs go without a GO until then
+    python tools/bench_eval.py attended           # operator: back to one GO per run; clears a halt
+
+Unattended mode is the operator's standing GO with an expiry, kept outside the
+repository. It halts the bench, for good until the operator returns, the first
+time a run faults, cannot be reset, returns no result or moves the door at all,
+or when it expires: the arm cannot close the door, and a fault wants a person.
+A halted bench answers every hardware run at once with status "halted" and
+moves nothing.
 
 The hardware tier never moves without a fresh operator GO, refuses to run when
 a pinned safety file differs from the operator's pin, and sends only
@@ -46,6 +55,10 @@ FROZEN = ("rammp_adl/safety.py", "rammp_adl/motion/collision_guard.py", "rammp_a
 # The node's own limits, read back from the running process before every run: an experiment may slow the
 # arm or tighten the free-space touch threshold, never the reverse.
 CEILINGS = {"transit_speed_scale": .4, "contact_speed_scale": .25, "touch_nm": 3.}
+
+UNATTENDED = PIN.parent/"unattended-until"
+HALTED = PIN.parent/"halted"
+MAX_UNATTENDED_HOURS = 12.
 
 STAGES = (("intake", 10), ("planned", 10), ("standoff", 15), ("at_handle", 15), ("grasped", 15), ("followed", 30), ("released", 5))
 
@@ -112,8 +125,59 @@ def go(_args):
     print("GO recorded: the next hardware run may move the arm. It is used once.")
 
 
+def unattended_active():
+    """The operator's standing GO, if it is set and unexpired. An expired one halts the bench."""
+    try:
+        until = float(UNATTENDED.read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        return False
+    if time.time() < until:
+        return True
+    end_unattended("the unattended window expired")
+    return False
+
+
+def halted():
+    try:
+        return HALTED.read_text().strip() or "halted"
+    except OSError:
+        return None
+
+
+def end_unattended(reason):
+    """The bench needs a person from here: halt it until the operator returns. Attended runs are unaffected."""
+    if not UNATTENDED.exists():
+        return
+    UNATTENDED.unlink()
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    HALTED.write_text(f"{stamp} {reason}\n")
+    BENCH.mkdir(parents=True, exist_ok=True)
+    with open(BENCH/"unattended-ended.txt", "a") as log:
+        log.write(f"{stamp} {reason}\n")
+
+
+def unattended(args):
+    hours = float(args.hours)
+    if not 0. < hours <= MAX_UNATTENDED_HOURS:
+        raise SystemExit(f"between 0 and {MAX_UNATTENDED_HOURS:g} hours")
+    UNATTENDED.parent.mkdir(parents=True, exist_ok=True)
+    until = time.time()+hours*3600.
+    UNATTENDED.write_text(f"{until} until {time.strftime('%Y-%m-%d %H:%M %Z', time.localtime(until))}\n")
+    HALTED.unlink(missing_ok=True)
+    print(f"unattended until {time.strftime('%Y-%m-%d %H:%M %Z', time.localtime(until))}: hardware runs go without a GO. "
+          "The bench halts itself on a fault, a failed reset, a run with no result, any movement of the door, or expiry.")
+
+
+def attended(_args):
+    UNATTENDED.unlink(missing_ok=True)
+    HALTED.unlink(missing_ok=True)
+    print("attended: every hardware run waits for a GO")
+
+
 def wait_for_go(timeout_s):
-    """A GO written after this call began, consumed on use. No GO, no motion."""
+    """A GO written after this call began, consumed on use; or the operator's standing GO. Neither, no motion."""
+    if unattended_active():
+        return True
     started, flag = time.time(), BENCH/"GO"
     print(f"waiting for the operator: close the door, stand at the e-stop, then `python tools/bench_eval.py go` "
           f"(up to {timeout_s:.0f} s)", file=sys.stderr, flush=True)
@@ -259,6 +323,11 @@ def hardware(args):
     if not start_file.is_file():
         return emit({"tier": "hardware", "score": 0., "status": "refused", "moved": False,
                      "reason": "no start pose; the operator runs `python tools/bench_eval.py record-start` once"})
+    stopped = halted()
+    if stopped:
+        return emit({"tier": "hardware", "score": 0., "status": "halted", "moved": False,
+                     "reason": f"the bench is halted until the operator returns ({stopped})"})
+    standing = unattended_active()
     if not wait_for_go(args.go_timeout_s):
         return emit({"tier": "hardware", "score": 0., "status": "operator_absent", "moved": False,
                      "reason": "no operator GO; nothing was sent to the arm"})
@@ -277,16 +346,22 @@ def hardware(args):
                      "reason": f"the node's speed or effort limits are looser than the bench allows: {limits}"})
     reset = asyncio.run(stack.reset(json.loads(start_file.read_text())["position_rad"]))
     if not reset["ok"]:
+        end_unattended("reset failed: "+str(reset["detail"])[:200])
         return emit({"tier": "hardware", "score": 0., "status": "reset_failed", "reason": reset["detail"], "reset": reset})
     time.sleep(args.settle_s)                                  # a still keyframe from the start pose
     began = time.time()
     result, phases = stack.send_task(TASK, args.task_timeout_s)
     if result is None:
+        end_unattended("a run returned no result")
         return emit({"tier": "hardware", "score": 0., "status": "no_result", "reason": phases[-1] if phases else "", "phases": phases})
     scored = score_run(result, attempt_for(result.get("task_id")))
+    if scored["safety_fault"]:
+        end_unattended("a run ended in a safety fault: "+scored["reason"][:200])
+    elif scored["followed_fraction"] > 0. or scored["stages"]["grasped"]:
+        end_unattended("the door was grasped or moved; it has to be closed by hand")
     lines = [] if log is None else [line[line.find("]: ")+3:][:240] for line in log.read_text(errors="replace").splitlines()
                                     if "rammp_adl_runtime" in line and "known gap" not in line][-40:]
-    return emit({"tier": "hardware", **scored, "duration_s": round(time.time()-began, 1), "phases": phases, "task": TASK,
+    return emit({"tier": "hardware", **scored, "operator": "standing GO" if standing else "GO", "duration_s": round(time.time()-began, 1), "phases": phases, "task": TASK,
                  "task_id": result.get("task_id"), "reset": reset, "node_log_tail": lines, "limits": limits})
 
 
@@ -334,7 +409,10 @@ def main():
     off = commands.add_parser("offline")
     off.add_argument("--plan", action="store_true", help="also ask the live planner for a path (no motion)")
     off.set_defaults(function=offline)
-    for name, function in (("go", go), ("freeze", freeze), ("record-start", record_start)):
+    standing = commands.add_parser("unattended")
+    standing.add_argument("--hours", type=float, required=True)
+    standing.set_defaults(function=unattended)
+    for name, function in (("go", go), ("freeze", freeze), ("record-start", record_start), ("attended", attended)):
         commands.add_parser(name).set_defaults(function=function)
     args = parser.parse_args()
     args.function(args)
