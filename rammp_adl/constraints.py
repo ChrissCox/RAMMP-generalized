@@ -28,6 +28,16 @@ OPENINGS = ("pull", "push", "slide_left", "slide_right", "slide_up", "slide_down
 DEFAULT_STEP = {"revolute": math.radians(5.), "prismatic": .02}
 HANDLE_EDGE_OFFSET_M = .05      # handles sit near the free edge; the pivot is a width away, less this
 WIDTH_BOUNDS_M = (.10, 1.20)
+#: The depth guard keeps a 3 cm margin. A face exemption has to reach just
+#: past it, so the surface itself can no longer trip, and no further: anything
+#: standing off the surface by more than this is still an obstacle.
+FACE_CLEARANCE_M = .035
+#: Where the exemption closes back onto the plane. The tool's own body comes
+#: within the margin of the face out to about 20 cm across from the grasp
+#: point -- the gripper's half-width and the wrist behind it -- and the cap
+#: tapers, so it is taken wider than that to leave the surface a usable skin
+#: where it matters. Bounded by the measured face either way.
+FACE_REACH_M = .30
 
 
 def slug(label):
@@ -75,6 +85,46 @@ def image_axes(geometry, base_from_camera):
     return {"normal": normal, "right": right/np.linalg.norm(right), "up": up/np.linalg.norm(up)}
 
 
+def contact_face_exclusions(record, grasp_position_m, *, clearance_m=FACE_CLEARANCE_M, reach_m=FACE_REACH_M):
+    """Depth-guard exemptions for the measured surface the part is mounted on.
+
+    A pull stands a few centimetres off its door, so at the contact pose the
+    tool is inside the guard's margin of the door itself: those depth points
+    are the surface the task is acting on, not an obstacle. The exempt region
+    is the slab just in front of the measured plane -- ``clearance_m`` deep,
+    ``reach_m`` across from the grasp point -- which one ball centred well
+    behind the plane reproduces: with radius ``R`` and depth ``d`` behind it,
+    the exemption is ``R-d`` deep on the axis and closes back to the plane
+    exactly at ``reach_m``. Everything standing further off the surface than
+    the guard's own margin still trips, so the view is not blinded.
+
+    Returns ``[]`` unless the record carries a measured face that the grasp
+    point actually lies against; a guess is not grounds for an exemption.
+    """
+    door = record.get("measured_door") or {}
+    centre, normal = door.get("centre_m"), record.get("surface_normal")
+    if centre is None or normal is None:
+        return []
+    centre, normal = np.asarray(centre, dtype=float), _unit(normal, "surface normal")
+    grasp = np.asarray(grasp_position_m, dtype=float)
+    if grasp.shape != (3,) or centre.shape != (3,) or not np.isfinite(grasp).all() or not np.isfinite(centre).all():
+        return []
+    standoff = float((grasp-centre) @ normal)
+    # The grasp has to be in front of the face and within a part's depth of it,
+    # or this is not the surface being approached.
+    if not 0. <= standoff <= .15:
+        return []
+    half_diagonal = math.hypot(float(door.get("width_m") or 0.), float(door.get("height_m") or 0.))/2.
+    reach = min(float(reach_m), half_diagonal)
+    clearance = float(clearance_m)
+    if reach <= clearance:
+        return []
+    depth = (reach*reach/clearance-clearance)/2.
+    radius = depth+clearance
+    foot = grasp-standoff*normal
+    return [(tuple(float(v) for v in foot-normal*depth), radius)]
+
+
 def metric_constraint(proposal, geometry, base_from_camera, *, constraint_id, entity_id, label,
                       surface_entity_id, handle_edge_offset_m=HANDLE_EDGE_OFFSET_M, door=None):
     """Turn Astra's proposal into a base-frame record the backend can follow.
@@ -113,7 +163,8 @@ def metric_constraint(proposal, geometry, base_from_camera, *, constraint_id, en
             scale = width/float(door["width_m"]) if door.get("width_m") else 1.
             reach = float(door["handle_offsets_m"][side])*scale
             record["measured_door"] = {"entity_id": door.get("entity_id"), "width_m": door.get("width_m"),
-                                       "height_m": door.get("height_m"), "handle_offsets_m": door.get("handle_offsets_m")}
+                                       "height_m": door.get("height_m"), "handle_offsets_m": door.get("handle_offsets_m"),
+                                       "centre_m": door.get("centre_m")}
         else:
             reach = width-handle_edge_offset_m
         pivot = centroid+toward*max(reach, .02)
