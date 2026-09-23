@@ -9,7 +9,8 @@ from rammp_adl.motion.collision_guard import (
     depth_to_points, load_spheres, mount_transform, nearest_intrusion, trajectory_positions_at)
 from rammp_adl.motion.kinematics import UrdfChain
 from rammp_adl.motion.rolling import JointState, JointTrajectory, TrajectoryPoint
-from rammp_adl.motion.sheppy_client import JOINTS
+from rammp_adl.motion.sheppy_client import JOINTS, TOOL_FRAME_FROM_FLANGE_M
+from rammp_adl.sheppy_backend import fingertip_exclusion_m
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -222,3 +223,52 @@ class GuardSetTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(BUNDLE.exists(), "The assembly sphere bundle is separate evidence")
+class GraspExclusionTests(unittest.TestCase):
+    """The ball around a grasp target where depth is intended contact, measured from this gripper."""
+
+    def setUp(self):
+        chain = UrdfChain.from_path(BUNDLE/"arm-gripper-locked.urdf")
+        d405 = load_spheres(BUNDLE/"d405-collision-spheres.json")["wrist_d405_link"]
+        self.model = SphereModel(chain, load_spheres(BUNDLE/"collision-spheres.json"),
+                                 extra=[("end_effector_link", mount_transform(), d405[0], d405[1])])
+        self.guard = CollisionGuard(self.model)
+        self.radius = fingertip_exclusion_m(self.model, margin_m=self.guard.margin_m)
+        pose = chain.base_from_link(self.model.configuration(HELD), "end_effector_link")
+        self.tool = pose[:3, :3] @ np.array([0., 0., TOOL_FRAME_FROM_FLANGE_M])+pose[:3, 3]
+        self.approach, self.across = pose[:3, 2], (pose[:3, 0], pose[:3, 1])
+        self.centres, self.radii, self.labels = self.model.placed(HELD)
+
+    def intrusion(self, points, exclusion_m):
+        kept = CollisionGuard.excluded(points, [(self.tool, exclusion_m)])
+        return nearest_intrusion(kept, self.centres, self.radii, self.labels, margin_m=self.guard.margin_m)
+
+    def surface(self, depth_m=.035, reach_m=.25, step_m=.01):
+        """A flat face behind the grasp point, as a cabinet door is behind its pull."""
+        span = np.arange(-reach_m, reach_m+step_m, step_m)
+        return np.array([self.tool+self.approach*depth_m+self.across[0]*u+self.across[1]*v
+                         for u in span for v in span])
+
+    def test_the_measured_ball_is_a_grippers_width_and_stops_short_of_the_wrist_camera(self):
+        camera = self.centres[self.labels.index("end_effector_link+extra")]
+        self.assertLess(self.radius, float(np.linalg.norm(camera-self.tool)))
+        self.assertTrue(.10 < self.radius < .15, self.radius)
+
+    def test_the_face_beside_the_grasp_point_trips_a_ten_centimetre_ball_but_not_the_measured_one(self):
+        face = self.surface()
+        # The fixture is the failure: at the grasp pose the fingertips reach past
+        # the constant ball, so the door around the pull reads as an obstacle.
+        trip = self.intrusion(face, .10)
+        self.assertIsNotNone(trip)
+        self.assertIn("finger", trip["link"])
+        self.assertIsNone(self.intrusion(face, self.radius))
+
+    def test_what_the_fingertips_cannot_reach_still_trips(self):
+        camera = self.centres[self.labels.index("end_effector_link+extra")]
+        radius = self.radii[self.labels.index("end_effector_link+extra")]
+        away = (camera-self.tool)/np.linalg.norm(camera-self.tool)
+        beside = np.array([camera+away*(radius+.01)])
+        self.assertGreater(float(np.linalg.norm(beside[0]-self.tool)), self.radius)
+        self.assertEqual(self.intrusion(beside, self.radius)["link"], "end_effector_link+extra")

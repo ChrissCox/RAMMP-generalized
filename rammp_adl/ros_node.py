@@ -265,6 +265,7 @@ def create_node():
                                                  load_spheres, mount_transform)
             from .motion.kinematics import UrdfChain
             from .motion.sheppy_arm import SheppyArmClient
+            from .sheppy_backend import fingertip_exclusion_m
             context_path = self.get_parameter("context_path").value or str(catalog.root / "config/sheppy-bench.context.json")
             capabilities = {c.strip() for c in self.get_parameter("capabilities").value.split(",") if c.strip()}
             self.client = SheppyArmClient(self)
@@ -282,13 +283,17 @@ def create_node():
                 chain = UrdfChain.from_path(bundle/"arm-gripper-locked.urdf")
             except Exception as exc:                        # noqa: BLE001 - reported, features withheld
                 self.get_logger().warning(f"no locked assembly model ({exc}); no collision guard, no wrist observation")
-            collision, depth_reader = None, None
+            collision, depth_reader, grasp_exclusion_m = None, None, None
             if chain is not None:
                 try:
                     d405 = load_spheres(bundle/"d405-collision-spheres.json")["wrist_d405_link"]
                     model = SphereModel(chain, load_spheres(bundle/"collision-spheres.json"),
                                         extra=[("end_effector_link", mount_transform(), d405[0], d405[1])])
                     collision = CollisionGuard(model)
+                    # The ball around a grasp target where depth is intended contact is
+                    # this gripper's own fingertip reach, not a constant.
+                    grasp_exclusion_m = fingertip_exclusion_m(model, margin_m=collision.margin_m)
+                    self.get_logger().info(f"grasp exclusion from the measured assembly: {grasp_exclusion_m:.3f} m")
                     self.depth = LatestDepth(
                         rgb_topic=self.get_parameter("wrist_rgb_topic").value,
                         depth_topic=self.get_parameter("wrist_depth_topic").value,
@@ -299,7 +304,7 @@ def create_node():
                     depth_reader = self.depth.latest
                 except Exception as exc:                    # noqa: BLE001 - reported, guard downgraded
                     self.get_logger().warning(f"live collision guard unavailable ({exc}); effort guard only")
-                    collision, depth_reader, self.depth = None, None, None
+                    collision, depth_reader, self.depth, grasp_exclusion_m = None, None, None, None
             scene_kind = self.get_parameter("scene").value
             if scene_kind not in ("grounded", "none"):
                 raise RuntimeError("scene must be grounded or none")
@@ -339,6 +344,7 @@ def create_node():
                                         guard_factory=guard_factory, collision_guarded=collision is not None,
                                         observer=self.scene, chain=chain, constraint_store=self.constraint_store,
                                         speed_scales={"transit": transit, "contact": contact},
+                                        grasp_exclusion_m=grasp_exclusion_m,
                                         max_evidence_age_s=float(self.get_parameter("max_evidence_age_s").value))
             self._base_context_path = context_path
             runtime = self._compose_runtime(context_path)

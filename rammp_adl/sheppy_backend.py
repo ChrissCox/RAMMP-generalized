@@ -60,6 +60,29 @@ def assertion(predicate, args, validity="true"):
     return {"predicate": predicate, "args": args, "validity": validity}
 
 
+def fingertip_exclusion_m(model, *, margin_m):
+    """How far past the grasp point the gripper's own fingertips reach, from the measured assembly.
+
+    Arriving at a grasp pose puts the fingertips through the surface the part
+    stands on: at the target, points on that surface a few centimetres to the
+    side of the grasp are inside the fingertips' own keep-out ball, and a guard
+    that calls them obstacles stops the approach it was asked to make. Only the
+    spheres that reach to or past the tool point are the grip itself, so the
+    exempt ball is the furthest of those surfaces from the tool point plus the
+    guard's margin -- nothing behind the fingers, not the gripper body, the
+    wrist or the camera, is exempted, and the ball stays a gripper's width.
+    """
+    import numpy as np
+    positions = [0.]*len(model.joint_names)
+    centres, radii, _ = model.placed(positions)
+    ee = model.chain.base_from_link(model.configuration(positions), "end_effector_link")
+    local = centres-(ee[:3, :3] @ np.array([0., 0., TOOL_FRAME_FROM_FLANGE_M])+ee[:3, 3])
+    fingertips = local @ ee[:3, 2]+radii >= 0.               # reaches to or past the tool point
+    if not fingertips.any():
+        raise ContractError("no sphere of the assembly reaches the tool point; the model is not a gripper")
+    return float((np.linalg.norm(local[fingertips], axis=1)+radii[fingertips]).max()+float(margin_m))
+
+
 @dataclass(frozen=True)
 class NominalApertureMap:
     """Robotiq 2F-85 nominal relation: 85 mm open at knuckle 0, closed at 0.8 rad.
@@ -377,6 +400,9 @@ class SheppyArmBackend:
             raise BackendFailure("cancelled", receipt["message"])
         if receipt["status"] == "guard_trip":
             trip = receipt.get("trip") or {}
+            # What tripped, where and how close: a guard that only says "collision"
+            # cannot be told from a wrong exemption by anyone reading the log later.
+            self.log(f"{context.node_id}: trip record {json.dumps(checked_copy(trip))[:300]}")
             # An obstacle on the remaining path means the collision evidence
             # the plan was admitted against is stale: stop, then replan.
             # Contact, a blind camera or lost state is a supervisor fault.

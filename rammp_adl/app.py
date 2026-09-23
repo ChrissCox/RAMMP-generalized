@@ -68,7 +68,7 @@ def astra_for(runtime: Runtime, *, transport=None):
 def sheppy_runtime(context, *, root=None, client, profiles=None, capabilities, commissioned,
                    observer=None, guard_factory=None, collision_guarded=False, aperture_map=None,
                    max_evidence_age_s=120., chain=None, constraints=None, constraint_store=None,
-                   speed_scales=None) -> Runtime:
+                   speed_scales=None, grasp_exclusion_m=None) -> Runtime:
     """Compose the runtime as a client of sheppy's arm module.
 
     The client is constructed and armed by the caller; this only binds the six
@@ -90,7 +90,8 @@ def sheppy_runtime(context, *, root=None, client, profiles=None, capabilities, c
                                observer=observer, guard_factory=guard_factory,
                                collision_guarded=collision_guarded, aperture_map=aperture_map,
                                chain=chain, constraints=constraints, constraint_store=constraint_store,
-                               speed_scales=speed_scales)
+                               speed_scales=speed_scales,
+                               **({} if grasp_exclusion_m is None else {"grasp_exclusion_m": grasp_exclusion_m}))
     registry = backend.registry(capabilities=capabilities, commissioned=commissioned, mode="hardware")
     context["available_skills"] = list(registry.available_skills)
     world = WorldModel(context, catalog, trust_initial=False, max_evidence_age_s=max_evidence_age_s)

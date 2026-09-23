@@ -394,12 +394,18 @@ class GuardIntegrationTests(unittest.TestCase):
 
     def test_a_collision_trip_is_stale_state_and_contact_is_a_safety_fault(self):
         backend = self.backend(lambda: object())
+        logged = []
+        backend.log = logged.append
         self.client.execute_status = "guard_trip"
         self.client.trip = {"kind": "collision", "distance_m": .01, "link": "bracelet_link",
                             "point_base_m": [.4, 0., .3], "margin_m": .03, "time_s": .8, "obstacle_points": 3}
         with self.assertRaises(BackendFailure) as caught:
             self.move(backend)
         self.assertEqual(caught.exception.code, "stale_state")
+        # What tripped and where is in the log, not only in the evidence the run discards.
+        trip = next(line for line in logged if "trip record" in line)
+        for part in ("bracelet_link", "0.01", "collision"):
+            self.assertIn(part, trip)
         self.assertEqual(caught.exception.evidence[0]["data"]["trip"]["kind"], "collision")
         self.assertIsNone(backend.current_pose)
         for kind in ("contact", "depth_blind", "depth_stale", "state_stale"):
