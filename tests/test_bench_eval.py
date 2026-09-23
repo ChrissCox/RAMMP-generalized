@@ -48,6 +48,15 @@ class ScoreTests(unittest.TestCase):
 
 
 class GateTests(unittest.TestCase):
+    def setUp(self):
+        # The operator's real unattended window and halt must not leak into these tests.
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        for name in ("UNATTENDED", "HALTED"):
+            patcher = patch.object(bench, name, Path(folder.name)/name.lower())
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def test_a_changed_safety_file_or_a_missing_pin_is_named(self):
         with tempfile.TemporaryDirectory() as folder:
             pin = Path(folder)/"frozen.json"

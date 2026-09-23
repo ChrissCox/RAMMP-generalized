@@ -4,12 +4,12 @@ __pycache__/
 .env
 .env.*
 !.env.example
-.venv/
+.venv
 *.egg-info/
 build/
 dist/
 install/
 log/
-artifacts/
+artifacts
 .pytest_cache/
 .vscode/browse.vc.db*
