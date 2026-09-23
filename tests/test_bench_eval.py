@@ -98,6 +98,11 @@ class GateTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 bench.unattended(type("A", (), {"hours": 48.})())
 
+    def test_the_node_roots_are_read_from_running_processes_only(self):
+        roots = bench.node_roots()
+        self.assertIsInstance(roots, set)
+        self.assertTrue(all(isinstance(root, str) and root.startswith("/") for root in roots))
+
 
 if __name__ == "__main__":
     unittest.main()

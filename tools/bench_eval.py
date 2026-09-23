@@ -285,6 +285,18 @@ def record_start(_args):
     os._exit(0)
 
 
+def node_roots():
+    """The working directory of every running adl node process: the checkout whose code it imported."""
+    roots = set()
+    for proc in Path("/proc").glob("[0-9]*"):
+        try:
+            if (proc/"cmdline").read_bytes().split(b"\0")[:3] == [b"python", b"-m", b"rammp_adl.ros_node"]:
+                roots.add(os.path.realpath(proc/"cwd"))
+        except OSError:
+            continue
+    return roots
+
+
 def restart_node(timeout_s=90.):
     before = set(NODE_LOGS.glob("*.log"))
     done = subprocess.run(["sheppy", "restart", "adl"], cwd=MANIFEST_DIR, capture_output=True, text=True, timeout=120)
@@ -298,6 +310,11 @@ def restart_node(timeout_s=90.):
             if "Traceback" in text:
                 return False, text[-800:], fresh[-1]
             if "robot facts bootstrapped" in text:
+                roots = node_roots()
+                if roots != {os.path.realpath(ROOT)}:
+                    # The deployment manifest no longer starts the node from active-root: this run would
+                    # score another checkout's code. Not a measurement.
+                    return False, f"the node runs {sorted(roots)}, not {ROOT}; the manifest must start it from active-root", fresh[-1]
                 return True, "", fresh[-1]
         time.sleep(1.)
     return False, "the node did not report ready", None
