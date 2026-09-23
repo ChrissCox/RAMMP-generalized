@@ -416,3 +416,11 @@ Arriving at a grasp role exempts a ball around the target, because the depth poi
 The ball is now measured from the assembly instead of assumed: `fingertip_exclusion_m` takes the spheres that reach to or past the tool point — the grip itself, here the fingertips and the inner knuckles — and returns the furthest of their surfaces from that point plus the guard's margin, 0.123 m for this 2F-85. Nothing behind the fingers is exempted: the ball stops 0.027 m short of the wrist camera's own spheres, and a point beside the camera still trips. The node logs the value it derived at startup.
 
 A guard trip is also now logged with its record — what link, how close, which point in the base frame — so the next reader can tell a real obstacle from a wrong exemption without the evidence the run discards.
+
+### The offline guard is flaky, and it is not the experiment's fault
+
+`RollingMotionSession`'s scheduling fixtures (`tests/test_motion_session.py`) fail about one run in three under `unittest discover`, always in the same family: a session that should reach `succeeded` comes back `failed`. They are real-time fixtures — a 2 ms tick, a 120 ms tick-gap budget, sub-100 ms planner delays — so a scheduler hiccup anywhere in the loop ends the session the way a stalled tracker would. Two of the seven offline runs recorded in `artifacts/bench` failed this way before this session, each on a different test of the family and each on code that could not have caused it; the campaign base fails it too.
+
+It does not reproduce in isolation: 12 runs of the failing scenario under a four-way CPU burn all passed, as did 12 more after importing every test module, and 15 more with several hundred long-lived cyclic objects held to lengthen full collections. Running the first half of the suite (`-p "test_[a-m]*.py"`, which includes this module and everything discovered before it) passed twice; only the whole suite fails. Whatever the trigger is, it needs the whole run, so the fixtures are measuring the machine as much as the code.
+
+Until that is fixed, a `checks_failed` at `guard.offline` whose `test_tail` names `RollingSessionTests` is a re-run, not a result: the experiment never reached the robot.
