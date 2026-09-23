@@ -398,3 +398,31 @@ The node now logs each executed move, each alignment look with the model's answe
 
 At the user's direction, with the user present at the e-stop for every moving run, a [bench command](../tools/bench_eval.py) now gives an automatic research loop one scored attempt at the door task ([brief](auto-research.md)). Each hardware run waits for a single-use operator GO, refuses when a pinned safety file differs from the operator's pin or the running node's speed and effort limits are looser than the bench's, restarts the node on the experiment's code, returns the arm to a recorded start pose through the planner, the send gates and an effort guard, sends the task and scores the result by stage. Task results now name each node's skill. Verified without motion: the refusal path, the live plan-only tier (one 31-point plan through every send gate, unarmed) and reading the node's limits back. No hardware run has been made through the harness. All **681 unit tests passed**.
 
+
+## The final approach and the door it is approaching, 2026-09-21
+
+Two bench runs reached the grasp pose's final approach and stopped there with
+`stale_state`, "guard tripped (collision)". That message is the whole of what
+either run recorded: the depth guard's trip carries the link, the clearance,
+the margin, the time on the path and the offending point, `move_to_pose`
+passes them on as evidence, and nothing ever logged them. The trip detail is
+now logged with the move, so a collision stop can be read out of the node log.
+
+The exemption itself was a single 10 cm ball at the grasp point. That covers
+the pull and the door immediately behind it, and nothing else: a pull stands a
+few centimetres off its door, so at the contact pose the gripper and the wrist
+behind it are inside the guard's 3 cm margin of the door *surface* well beyond
+10 cm from the grasp point, and the surface reads as an obstacle. The approach
+now also exempts the measured face the part is mounted on, taken from the
+constraint record's `measured_door` (`grounded_scene.door_for` now carries the
+face centre through, so the record has the plane and not just its extents).
+
+The exempt region is the slab just in front of that measured plane: 3.5 cm
+deep, closing back onto the plane by 30 cm across from the grasp point. One
+ball centred far behind the plane reproduces it — radius `R` at depth `d`
+behind gives `R-d` of clearance on the axis and reaches the plane at
+`sqrt(R²-d²)` — so the bound that matters holds everywhere: nothing standing
+off the surface by more than the guard's own margin is ever exempt, and a real
+obstacle on the door still trips. The exemption applies to the final approach
+to the grasp role only, never to the standoff transits or the alignment looks,
+and a record with no measured face earns none.
