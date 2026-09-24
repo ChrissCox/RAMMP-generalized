@@ -904,9 +904,48 @@ class SheppyArmBackend:
     #: thickness inside the hinge-side edge and just behind the face. The bench's door, fitted from the
     #: wrist depth while it swung 26 degrees (2026-09-24): 14.8 mm inside the edge, 12.2 mm behind the face.
     hinge_inset_m, hinge_depth_m = .015, .012
+    #: Compliant pulls (the node's compliant_contact): the driver's joint impedance mode tracks the same
+    #: planned trajectory but yields to the part, so a mechanism the camera placed a centimetre or two off
+    #: costs a few newtons instead of tripping the guard, and the hand's measured path shows where the
+    #: mechanism really goes. The first stretch runs on the camera's model; the rest is re-planned on the
+    #: mechanism fitted to that path. Stiffness is the driver's own (its teleop gains), no stiffer.
+    compliant_pull = False
+    pull_impedance = {"kq": (80., 80., 80., 80., 30., 30., 30.), "zeta": .7, "torque_limit": (39., 39., 39., 39., 9., 9., 9.)}
+    pull_force_limit_n = 40.                        # at the tool, springs' torque mapped through the Jacobian
+    pull_path_tolerance_rad = .15                   # the driver aborts a joint pushed further off than this
+    pull_backstop_nm = 12.                          # raw wrist effort, a backstop behind the force guard
+    pull_hold_s = .5                                # the spring fades in over 0.5 s on entering the mode
+    pull_first = {"rad": .5, "m": .06}
+    pull_rest = {"rad": .8, "m": .12}
+    pull_segments_max = 4
     #: Ask the model for a second opinion on how far the part moved, from the last frame. It gates
     #: nothing and costs a provider request per pull, so it is off unless the operator turns it on.
     model_progress_check = False
+
+    def _tool_jacobian(self, positions):
+        """Tool-point linear and angular velocity per joint rate (6x7), by differencing the kinematic model."""
+        import numpy as np
+        from .motion.kinematics import quaternion_matrix
+        positions = [float(v) for v in positions]
+        origin, orientation = self._tool_pose(positions)
+        rotation = quaternion_matrix(orientation)
+        jacobian = np.zeros((6, len(positions)))
+        for joint in range(len(positions)):
+            nudged = list(positions)
+            nudged[joint] += 1e-5
+            position, turned = self._tool_pose(nudged)
+            jacobian[:3, joint] = (np.asarray(position)-np.asarray(origin))/1e-5
+            spin = (quaternion_matrix(turned) @ rotation.T-np.eye(3))/1e-5
+            jacobian[3:, joint] = (spin[2, 1], spin[0, 2], spin[1, 0])
+        return jacobian
+
+    def _fit_pull(self, joints, kind, arc, prior_pivot):
+        """The mechanism the hand's measured path shows; kinematics for every sample, so run off the event loop."""
+        from .motion.articulation import fit_articulation
+        positions = [self._tool_pose(tuple(q))[0] for q in joints]
+        if kind != "revolute" or prior_pivot is None:
+            return fit_articulation(positions, kind="prismatic")
+        return fit_articulation(positions, kind="revolute", axis=arc["axis_base"], prior_pivot=prior_pivot)
 
     def _hinge_at_contact(self, record, position, orientation):
         """The record with its hinge placed from what the arm measured up close; the record itself when it cannot be.
@@ -945,7 +984,8 @@ class SheppyArmBackend:
                         "axis_turned_deg": round(math.degrees(math.acos(min(1., abs(float(axis @ np.asarray(record["axis_base"], dtype=float)
                                                                                          /np.linalg.norm(record["axis_base"])))))), 2)}
 
-    async def _plan_constraint(self, record, start, position, orientation, target, context, *, can_swivel):
+    async def _plan_constraint(self, record, start, position, orientation, target, context, *, can_swivel, lag=None,
+                               reach=None):
         """The planner's solutions along the constraint, each planned from the last one, plan-only; nothing moves.
 
         The wrist turns with the part (lag 0) when the planner reaches the target that way. When it
@@ -954,10 +994,13 @@ class SheppyArmBackend:
         A waypoint the planner refuses ends the chain; what was planned before it is still one pass.
         """
         from .constraints import waypoints
-        lags = [0.]+[lag for lag in self.swivel_lags if can_swivel]
+        if lag is not None:                                 # a later stretch keeps the lag the pull began with
+            lags = [float(lag)]
+        else:
+            lags = [0.]+[value for value in self.swivel_lags if can_swivel]
         chosen = lags[-1]
         for lag in lags[:-1]:
-            _, goal_position, goal_orientation = waypoints(record, position, orientation, target, lag=lag)[-1]
+            _, goal_position, goal_orientation = waypoints(record, position, orientation, reach or target, lag=lag)[-1]
             try:
                 await self.client.plan_to_pose(goal_position, goal_orientation, start_joints=start,
                                                cancel_event=context.cancel_event)
@@ -1057,80 +1100,138 @@ class SheppyArmBackend:
                 return normal
             # The camera waits on a still keyframe of the part while the planner plans the pull.
             looking = asyncio.ensure_future(first_look()) if scene is not None else None
-            began = time.monotonic()
-            try:
-                chain = await self._plan_constraint(arc, start, position, orientation, target, context, can_swivel=can_swivel)
-            finally:
-                if looking is not None:
-                    initial_normal = await looking
-            planned_s = time.monotonic()-began
-            values, knots, lag, refusal, steps = chain["values"], chain["knots"], chain["lag"], chain["refusal"], chain["steps"]
-            if len(values) < 2:
-                status, detail = "planning_failed", str(refusal)
-                raise BackendFailure("planning_failed", f"step to {min(target, float(record['step'])):.3f} {unit}: {refusal}") from refusal
+            from .motion.articulation import ArticulationError, fit_articulation
+            compliant = bool(self.compliant_pull)
+            impedance = dict(self.pull_impedance) if compliant else None
             rate, acceleration = self.constraint_pace[unit]
             scale = self.speed_scales.get("contact", 1.)
-            try:
-                trajectory, timing, spline = constraint_trajectory(
-                    values, knots, rate_limits=[limit/scale for limit in JOINT_VMAX], value_rate=rate, value_accel=acceleration,
-                    provenance=f"rammp_curobo:{len(values)-1} waypoint solutions along {constraint_id}, splined and re-timed")
-            except PathError as exc:
-                status, detail = "planning_failed", str(exc)
-                raise BackendFailure("planning_failed", detail) from exc
+            prior_pivot = None if arc.get("pivot_base") is None else list(arc["pivot_base"])
+            q_now, p_now, o_now = start, position, orientation
+            lag, refusal, trace, pulls, fits, planned_s, peak_force = None, None, [], [], [], 0., 0.
+            while len(pulls) < (self.pull_segments_max if compliant else 1):
+                stretch = target-achieved if not compliant else min(target-achieved, self.pull_first[unit] if not pulls
+                                                                   else self.pull_rest[unit])
+                if stretch <= (.02 if unit == "rad" else .005):
+                    break
+                began = time.monotonic()
+                try:
+                    chain = await self._plan_constraint(arc, q_now, p_now, o_now, stretch, context, can_swivel=can_swivel,
+                                                        lag=lag, reach=target-achieved)
+                finally:
+                    if looking is not None:              # the part is seen from where the pull begins, before it moves
+                        initial_normal, looking = await looking, None
+                planned_s += time.monotonic()-began
+                values, knots, refusal, lag = chain["values"], chain["knots"], chain["refusal"], chain["lag"]
+                steps += [{**step, "value": achieved+step["value"], "stretch": len(pulls)} for step in chain["steps"]]
+                if len(values) < 2:
+                    if not pulls:
+                        status, detail = "planning_failed", str(refusal)
+                        raise BackendFailure("planning_failed",
+                                             f"step to {min(target, float(record['step'])):.3f} {unit}: {refusal}") from refusal
+                    break
+                try:
+                    trajectory, timing, spline = constraint_trajectory(
+                        values, knots, rate_limits=[limit/scale for limit in JOINT_VMAX], value_rate=rate, value_accel=acceleration,
+                        hold_s=self.pull_hold_s if compliant else 0.,
+                        provenance=f"rammp_curobo:{len(values)-1} waypoint solutions along {constraint_id}, splined and re-timed")
+                except PathError as exc:
+                    status, detail = "planning_failed", str(exc)
+                    raise BackendFailure("planning_failed", detail) from exc
 
-            def tool_pose(joints):
-                tool_position, tool_orientation = self._tool_pose(tuple(joints))
-                return tool_position, quaternion_matrix(tool_orientation)
-            off = deviation(spline, values[-1], tool_pose, lambda value: constraint_pose(arc, position, orientation, value, lag=lag))
-            if off["distance_m"] > self.constraint_tolerance_m or math.degrees(off["turn_rad"]) > self.constraint_tolerance_deg:
-                status = "planning_failed"
-                detail = (f"between the planner's waypoints the pull leaves the {record['label']}'s path by {off['distance_m']*1000:.1f} mm "
-                          f"and {math.degrees(off['turn_rad']):.1f} deg (at {off['distance_at']:.3f} {unit}); nothing was sent")
-                raise BackendFailure("planning_failed", detail)
-            guard = PullGuard(self._guard(touch_nm=float(record["contact_effort_nm"]), tool_exclusion_m=self.tool_exclusion_m),
-                              renew_at_s=[timing.time_at(value) for value in values[1:-1]],
-                              grasp_knuckle=self.grasp_knuckle, slip_margin_rad=self.grasp_stall_margin_rad)
-            await context.feedback(event="constraint_motion", skill="follow_constraint", value=values[-1], unit=unit,
-                                   waypoints=len(values)-1, duration_s=trajectory.duration_s)
-            self.log(f"follow {constraint_id}: {len(values)-1} waypoints to {values[-1]:.3f} {unit} planned in {planned_s:.1f} s"
-                     f"{f' with the wrist lagging {lag:.0%} of the turn' if lag else ''}; one {trajectory.duration_s:.1f} s pull, "
-                     f"within {off['distance_m']*1000:.1f} mm of the path")
-            self.last_trajectory = None                     # the way in to the part is no way out once it has moved
-            receipt = await self.client.execute(trajectory, cancel_event=context.cancel_event, guard=guard)
-            peak = guard.peak_nm
-            if receipt["status"] != "succeeded" and getattr(self.client, "settle", None) is not None:
-                await self.client.settle(timeout_s=3.)         # report the stop from a still arm
-            achieved = values[-1] if receipt["status"] == "succeeded" else (
-                timing.value_at(float(receipt.get("progress") or 0.)*trajectory.duration_s) if receipt.get("sent") else 0.)
-            for step in steps:
-                step["status"] = receipt["status"] if step["value"] <= achieved+1e-9 else "not_reached"
-            self.log(f"follow {constraint_id}: {achieved:.3f}/{target:.3f} {unit} {receipt['status']} peak {peak:.1f} Nm")
-            if receipt["status"] == "cancelled":
-                status, detail = "cancelled", receipt["message"]
-                raise BackendFailure("cancelled", detail)
-            if receipt["status"] == "guard_trip":
-                trip_info = receipt.get("trip") or {}
-                kind = trip_info.get("kind")
-                if kind == "slip":
-                    status, detail = "slipped", "the gripper closed further than at grasp during the pull; the part slipped out"
+                def tool_pose(joints):
+                    tool_position, tool_orientation = self._tool_pose(tuple(joints))
+                    return tool_position, quaternion_matrix(tool_orientation)
+                origin_p, origin_o = p_now, o_now
+                off = deviation(spline, values[-1], tool_pose,
+                                lambda value: constraint_pose(arc, origin_p, origin_o, value, lag=lag))
+                if off["distance_m"] > self.constraint_tolerance_m or math.degrees(off["turn_rad"]) > self.constraint_tolerance_deg:
+                    status = "planning_failed"
+                    detail = (f"between the planner's waypoints the pull leaves the {record['label']}'s path by "
+                              f"{off['distance_m']*1000:.1f} mm and {math.degrees(off['turn_rad']):.1f} deg "
+                              f"(at {off['distance_at']:.3f} {unit}); nothing was sent")
+                    raise BackendFailure("planning_failed", detail)
+                guard = PullGuard(self._guard(touch_nm=self.pull_backstop_nm if compliant else float(record["contact_effort_nm"]),
+                                              tool_exclusion_m=self.tool_exclusion_m),
+                                  renew_at_s=[timing.time_at(value) for value in values[1:-1]],
+                                  grasp_knuckle=self.grasp_knuckle, slip_margin_rad=self.grasp_stall_margin_rad,
+                                  stiffness=impedance["kq"] if compliant else None,
+                                  force_limit_n=self.pull_force_limit_n if compliant else None,
+                                  jacobian=self._tool_jacobian if compliant else None,
+                                  hold_s=self.pull_hold_s if compliant else 0.)
+                await context.feedback(event="constraint_motion", skill="follow_constraint", value=achieved+values[-1], unit=unit,
+                                       waypoints=len(values)-1, duration_s=trajectory.duration_s)
+                self.log(f"follow {constraint_id}: {len(values)-1} waypoints to {achieved+values[-1]:.3f} {unit} planned in "
+                         f"{time.monotonic()-began:.1f} s{f' with the wrist lagging {lag:.0%} of the turn' if lag else ''}; one "
+                         f"{trajectory.duration_s:.1f} s {'compliant ' if compliant else ''}pull, within {off['distance_m']*1000:.1f} mm of the path")
+                self.last_trajectory = None                 # the way in to the part is no way out once it has moved
+                options = ({"impedance": impedance, "path_tolerance_rad": self.pull_path_tolerance_rad,
+                            "goal_tolerance_rad": self.pull_path_tolerance_rad} if compliant else {})
+                receipt = await self.client.execute(trajectory, cancel_event=context.cancel_event, guard=guard, **options)
+                peak, peak_force = max(peak, guard.peak_nm), max(peak_force, guard.peak_force_n)
+                trace += [joints for _, joints in guard.trace]
+                if receipt["status"] != "succeeded" and getattr(self.client, "settle", None) is not None:
+                    await self.client.settle(timeout_s=3.)     # report the stop from a still arm
+                commanded = values[-1] if receipt["status"] == "succeeded" else (
+                    timing.value_at(float(receipt.get("progress") or 0.)*trajectory.duration_s) if receipt.get("sent") else 0.)
+                fit = None
+                if compliant and len(trace) >= 8:
+                    try:
+                        fit = await asyncio.to_thread(self._fit_pull, [start]+trace, record["kind"], arc, prior_pivot)
+                    except ArticulationError as exc:
+                        self.log(f"follow {constraint_id}: the measured path fits no mechanism ({exc}); keeping the planned one")
+                if fit is not None:
+                    fits.append(fit)
+                    moved = abs(fit["turned"]) if fit["kind"] == "revolute" else fit["travelled"]
+                    if fit["kind"] == "revolute":
+                        arc = {**arc, "pivot_base": fit["pivot"]}
+                    self.log(f"follow {constraint_id}: the part moved {moved:.3f} {unit} as the hand measured it"
+                             + (f"; hinge fitted {fit['shift_m']*1000:.0f} mm from the placed one, {fit['rms_m']*1000:.1f} mm rms"
+                                if fit["kind"] == "revolute" else f"; {fit.get('overruled', '')} slide fitted"))
+                    achieved = moved
+                else:
+                    achieved += commanded
+                pulls.append({"trajectory_digest": trajectory.digest, "duration_s": trajectory.duration_s, "commanded": commanded,
+                              "status": receipt["status"], "path_deviation_m": off["distance_m"], "path_turn_rad": off["turn_rad"],
+                              "fit": None if fit is None else {k: fit[k] for k in fit if k in ("kind", "pivot", "radius", "turned",
+                                                                                                 "travelled", "rms_m", "shift_m")}})
+                self.log(f"follow {constraint_id}: {achieved:.3f}/{target:.3f} {unit} {receipt['status']} peak {peak:.1f} Nm"
+                         + (f", {peak_force:.0f} N at the tool" if compliant else ""))
+                if receipt["status"] == "cancelled":
+                    status, detail = "cancelled", receipt["message"]
+                    raise BackendFailure("cancelled", detail)
+                if receipt["status"] == "guard_trip":
+                    trip_info = receipt.get("trip") or {}
+                    kind = trip_info.get("kind")
+                    if kind == "slip":
+                        status, detail = "slipped", "the gripper closed further than at grasp during the pull; the part slipped out"
+                        raise BackendFailure("slip", detail)
+                    status, detail = "tripped", receipt["message"]
+                    code = "model_mismatch" if kind == "contact" else "stale_state" if kind == "collision" else "safety_fault"
+                    raise BackendFailure(code, f"stopped at {achieved:.3f} of {target:.3f} {unit}: {receipt['message']}",
+                                         evidence=[{"evidence_id": f"guard-{uuid.uuid4().hex}", "source": self.mode,
+                                                    "predicates": [], "ttl_s": 30.,
+                                                    "data": {"trip": checked_copy(trip_info), "receipt": checked_copy(receipt),
+                                                             "achieved": achieved, "constraint": constraint_id}}])
+                if receipt["status"] != "succeeded":
+                    status, detail = "failed", receipt["message"]
+                    raise BackendFailure("safety_fault" if receipt["status"] in ("goal_not_reached", "timeout") else "planning_failed",
+                                         detail)
+                if fit is not None and fit["kind"] != record["kind"]:
+                    status = "tripped"
+                    detail = f"the part moved as a {fit['kind']} joint, not the {record['kind']} it was modelled as"
+                    raise BackendFailure("model_mismatch", detail)
+                live = self.client.live_joints()
+                knuckle = None if live is None else live["knuckle_rad"]
+                if (knuckle is not None and self.grasp_knuckle is not None
+                        and knuckle > self.grasp_knuckle+self.grasp_stall_margin_rad):
+                    status, detail = "slipped", "the gripper closed further than at grasp; the part slipped out"
                     raise BackendFailure("slip", detail)
-                status, detail = "tripped", receipt["message"]
-                code = "model_mismatch" if kind == "contact" else "stale_state" if kind == "collision" else "safety_fault"
-                raise BackendFailure(code, f"stopped at {achieved:.3f} of {target:.3f} {unit}: {receipt['message']}",
-                                     evidence=[{"evidence_id": f"guard-{uuid.uuid4().hex}", "source": self.mode,
-                                                "predicates": [], "ttl_s": 30.,
-                                                "data": {"trip": checked_copy(trip_info), "receipt": checked_copy(receipt),
-                                                         "achieved": achieved, "constraint": constraint_id}}])
-            if receipt["status"] != "succeeded":
-                status, detail = "failed", receipt["message"]
-                raise BackendFailure("safety_fault" if receipt["status"] in ("goal_not_reached", "timeout") else "planning_failed",
-                                     detail)
-            live = self.client.live_joints()
-            knuckle = None if live is None else live["knuckle_rad"]
-            if (knuckle is not None and self.grasp_knuckle is not None
-                    and knuckle > self.grasp_knuckle+self.grasp_stall_margin_rad):
-                status, detail = "slipped", "the gripper closed further than at grasp; the part slipped out"
-                raise BackendFailure("slip", detail)
+                if refusal is not None or live is None:
+                    break
+                q_now = tuple(float(v) for v in live["position_rad"])
+                p_now, o_now = self._tool_pose(q_now)
+            for step in steps:
+                step["status"] = "succeeded" if step["value"] <= achieved+(.05 if unit == "rad" else .01) else "not_reached"
             if refusal is not None:
                 status, detail = "planning_failed", str(refusal)
                 raise BackendFailure("planning_failed", f"pulled to {achieved:.3f} {unit}; the next waypoint: {refusal}") from refusal
@@ -1178,9 +1279,10 @@ class SheppyArmBackend:
                 "constraint": {"constraint_id": constraint_id, "kind": record["kind"], "digest": record.get("digest"),
                                "parameters_version": record.get("parameters_version")},
                 "profile_id": profile["profile_id"], "target": target, "achieved": achieved, "unit": unit,
-                "steps": steps, "hinge": hinge, "pull": {"trajectory_digest": trajectory.digest, "duration_s": trajectory.duration_s,
-                                         "planned_s": round(planned_s, 3), "wrist_lag": lag,
-                                         "path_deviation_m": off["distance_m"], "path_turn_rad": off["turn_rad"]},
+                "steps": steps, "hinge": hinge, "pull": {"compliant": compliant, "stretches": pulls, "planned_s": round(planned_s, 3),
+                                                         "wrist_lag": lag, "peak_force_n": peak_force,
+                                                         "duration_s": sum(pull["duration_s"] for pull in pulls),
+                                                         "path_deviation_m": max(pull["path_deviation_m"] for pull in pulls)},
                 "peak_effort_nm": peak, "contact_effort_nm": record["contact_effort_nm"],
                 "measured": measured, "verified_locally": verified, "progress": scores,
                 "evidence_basis": ("tool traced the constraint path with the grip retained; the surface normal seen by the "
@@ -1210,7 +1312,7 @@ class SheppyArmBackend:
 
 
 class PullGuard:
-    """One pull's guard: the composed guard, its effort baseline moved along at every waypoint, and the grip.
+    """One pull's guard: the composed guard, its effort baseline moved along at every waypoint, the grip, the path.
 
     Flown in steps from rest, a pull took a fresh effort baseline at each step. Flown as one
     trajectory, the wrist's own gravity load changes by a few newton-metres over a door's swing
@@ -1218,15 +1320,26 @@ class PullGuard:
     pull passes each waypoint instead, unless the effort has already risen by half the budget
     since the last one: then something is pushing back and the old baseline stands. A grip that
     closes past the grasp by more than the stall margin stops the pull: the part slipped out.
+
+    A compliant pull (stiffness given) is also measured the way the driver's impedance mode feels
+    it: the springs' torque, stiffness times the driver's tracking error, with gravity already
+    compensated by the driver, is mapped through the tool Jacobian to the force at the tool. Its
+    baseline is taken at the end of the hold, when the spring is in and nothing has moved; beyond
+    force_limit_n the pull stops. Every tick's joints are kept: the hand's measured path.
     """
 
-    def __init__(self, guard, *, renew_at_s=(), grasp_knuckle=None, slip_margin_rad=.05):
+    def __init__(self, guard, *, renew_at_s=(), grasp_knuckle=None, slip_margin_rad=.05, stiffness=None,
+                 force_limit_n=None, jacobian=None, hold_s=0.):
         self.guard, self.effort = guard, getattr(guard, "effort", None)
         self.depth_reader = getattr(guard, "depth_reader", None)
         self.exclusions, self.tool_exclusion_m = getattr(guard, "exclusions", ()), getattr(guard, "tool_exclusion_m", 0.)
         self.renew_at_s = sorted(float(t) for t in renew_at_s)
         self.grasp_knuckle, self.slip_margin_rad = grasp_knuckle, float(slip_margin_rad)
         self.renewals, self.held = 0, 0
+        self.stiffness = None if stiffness is None else tuple(float(v) for v in stiffness)
+        self.force_limit_n, self.jacobian, self.hold_s = force_limit_n, jacobian, float(hold_s)
+        self.spring_baseline, self.peak_force_n = None, 0.
+        self.trace = []
 
     @property
     def peak_nm(self):
@@ -1247,13 +1360,38 @@ class PullGuard:
         else:
             self.held += 1
 
+    def _contact(self, live, trajectory, elapsed_s):
+        """The spring force at the tool, or a trip when it passes the limit."""
+        if self.stiffness is None or self.jacobian is None or live is None:
+            return None
+        import numpy as np
+        error = live.get("tracking_error_rad")
+        if error is None:
+            desired = trajectory.sample(min(max(float(elapsed_s), 0.), trajectory.duration_s)).position
+            error = [d-a for d, a in zip(desired, live["position_rad"])]
+        torque = np.asarray(self.stiffness)*np.asarray(error, dtype=float)
+        if self.spring_baseline is None or elapsed_s <= self.hold_s:
+            self.spring_baseline = torque
+            return None
+        wrench, *_ = np.linalg.lstsq(np.asarray(self.jacobian(live["position_rad"])).T, torque-self.spring_baseline, rcond=None)
+        force = float(np.linalg.norm(wrench[:3]))
+        self.peak_force_n = max(self.peak_force_n, force)
+        if self.force_limit_n is not None and force > self.force_limit_n:
+            return {"kind": "contact", "force_n": force, "force_limit_n": float(self.force_limit_n)}
+        return None
+
     def check(self, *, live, trajectory, elapsed_s, now):
+        if live is not None:
+            self.trace.append((float(elapsed_s), tuple(float(v) for v in live["position_rad"])))
         while self.renew_at_s and elapsed_s >= self.renew_at_s[0]:
             self.renew_at_s.pop(0)
             self._renew(None if live is None else live.get("effort_nm"))
         knuckle = None if live is None else live.get("knuckle_rad")
         if knuckle is not None and self.grasp_knuckle is not None and knuckle > self.grasp_knuckle+self.slip_margin_rad:
             return {"kind": "slip", "knuckle_rad": float(knuckle), "grasp_knuckle_rad": float(self.grasp_knuckle)}
+        trip = self._contact(live, trajectory, elapsed_s)
+        if trip is not None:
+            return trip
         if self.guard is None:
             return None if live is not None else {"kind": "state_stale", "message": "no fresh joint state during motion"}
         return self.guard.check(live=live, trajectory=trajectory, elapsed_s=elapsed_s, now=now)

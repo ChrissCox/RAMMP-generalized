@@ -57,6 +57,33 @@ TOOL_FRAME_FROM_FLANGE_M = 0.120
 #: Everything here stays in knuckle radians; only the wire value is normalized.
 KNUCKLE_CLOSED_RAD = 0.8
 
+#: ExecuteJointTrajectory control_mode 1 tracks the same joint trajectory in the driver's joint impedance
+#: mode: tau = g(q) + Kq*clamp(q_d - q) - Dq*qd, damping derived from zeta (kinova-gen3-driver
+#: joint_impedance_mode.h, kinova-gen3-ros2 1.0.1). A goal may be softer than the driver's own
+#: defaults (its teleop gains), never stiffer, and never push past the URDF effort limits.
+IMPEDANCE_KQ_MAX = (80., 80., 80., 80., 30., 30., 30.)
+IMPEDANCE_TORQUE_MAX = (39., 39., 39., 39., 9., 9., 9.)
+
+
+def impedance_problems(gains):
+    """Why these joint impedance gains must not be sent, as a list (empty when they may)."""
+    try:
+        kq, torque, zeta = (tuple(float(v) for v in gains["kq"]), tuple(float(v) for v in gains["torque_limit"]),
+                            float(gains["zeta"]))
+    except (KeyError, TypeError, ValueError):
+        return ["impedance gains need kq, torque_limit and zeta"]
+    problems = []
+    if len(kq) != len(JOINTS) or len(torque) != len(JOINTS):
+        return ["one stiffness and one torque limit per joint"]
+    if not all(math.isfinite(v) and 0. < v <= limit for v, limit in zip(kq, IMPEDANCE_KQ_MAX)):
+        problems.append("stiffness outside (0, the driver's own gains]")
+    if not all(math.isfinite(v) and 0. < v <= limit for v, limit in zip(torque, IMPEDANCE_TORQUE_MAX)):
+        problems.append("torque limit outside (0, the URDF effort limit]")
+    if not (math.isfinite(zeta) and .2 <= zeta <= 2.):
+        problems.append("damping ratio outside [0.2, 2]")
+    return problems
+
+
 #: rammp_arm_interfaces/action/ExecuteJointTrajectory Result.error_code, exactly
 #: as the pinned definition declares them; no other code is named here.
 RESULT_NAMES = {0: "SUCCESSFUL", -1: "INVALID_GOAL", -4: "PATH_TOLERANCE_VIOLATED",

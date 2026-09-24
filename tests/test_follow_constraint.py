@@ -66,7 +66,7 @@ def solve(chain, seed, position, rotation):
     """The planner's stand-in: damped least squares from the start it was given. Tests only; the runtime solves no IK."""
     from scipy.spatial.transform import Rotation
     q = np.array(seed, dtype=float)
-    for _ in range(50):
+    for _ in range(80):
         frame = tool_frame(chain, q)
         error = np.concatenate([position-frame[:3, 3], Rotation.from_matrix(rotation @ frame[:3, :3].T).as_rotvec()])
         if np.linalg.norm(error) < 1e-10:
@@ -78,7 +78,14 @@ def solve(chain, seed, position, rotation):
             moved = tool_frame(chain, nudged)
             jacobian[:3, j] = (moved[:3, 3]-frame[:3, 3])/1e-7
             jacobian[3:, j] = Rotation.from_matrix(moved[:3, :3] @ frame[:3, :3].T).as_rotvec()/1e-7
-        q += jacobian.T @ np.linalg.solve(jacobian @ jacobian.T+1e-9*np.eye(6), error)
+        step = jacobian.T @ np.linalg.solve(jacobian @ jacobian.T+1e-9*np.eye(6), error)
+        q += step*min(1., .2/max(np.abs(step).max(), 1e-12))            # bounded steps, as a planner's would be
+    seed = np.asarray(seed, dtype=float)
+    for joint in (0, 2, 4, 6):                                          # continuous joints: the turn nearest the start
+        q[joint] = seed[joint]+(q[joint]-seed[joint]+np.pi) % (2.*np.pi)-np.pi
+    frame = tool_frame(chain, q)
+    if np.linalg.norm(position-frame[:3, 3]) > 1e-4 or np.linalg.norm(Rotation.from_matrix(rotation @ frame[:3, :3].T).as_rotvec()) > 1e-4:
+        raise SheppyClientError(IK_FAIL)                                # out of reach: the planner says so too
     return q
 
 
@@ -125,6 +132,43 @@ class ArcClient(FakeClient):
         self.joints = tuple(path.points[-1].state.position)
         return {"status": "succeeded", "message": "SUCCESSFUL", "progress": 1., "error_code": 0, "sent": True,
                 "cancel_requested": False, "final_position_rad": list(self.joints), "goal_gap_rad": 0.}
+
+
+class YieldingClient(ArcClient):
+    """A driver in impedance mode against a stiff door: the hand ends up on the door's own circle, not the plan's."""
+    def __init__(self, chain, *, true_pivot, axis, **kwargs):
+        super().__init__(chain, **kwargs)
+        self.true_pivot, self.axis = np.asarray(true_pivot, dtype=float), np.asarray(axis, dtype=float)/np.linalg.norm(axis)
+        self.options_seen = []
+
+    def on_the_door(self, desired, radius):
+        frame = tool_frame(self.chain, desired)
+        offset = frame[:3, 3]-self.true_pivot
+        along = (offset @ self.axis)*self.axis
+        flat = offset-along
+        return solve(self.chain, desired, self.true_pivot+along+flat/np.linalg.norm(flat)*radius, frame[:3, :3])
+
+    async def execute(self, path, *, cancel_event=None, guard=None, impedance=None, path_tolerance_rad=None, **kwargs):
+        self.sent.append(path)
+        self.guards_seen = getattr(self, "guards_seen", [])+[guard]
+        self.options_seen.append({"impedance": impedance, "path_tolerance_rad": path_tolerance_rad, **kwargs})
+        offset = tool_frame(self.chain, self.joints)[:3, 3]-self.true_pivot
+        radius = np.linalg.norm(offset-(offset @ self.axis)*self.axis)
+        actual = self.joints
+        for progress in np.linspace(.02, 1., 50):
+            desired = path.sample(progress*path.duration_s).position
+            actual = tuple(float(v) for v in self.on_the_door(desired, radius)) if impedance is not None else tuple(desired)
+            live = {**self.live_joints(), "position_rad": actual, "tracking_error_rad": tuple(np.subtract(desired, actual))}
+            guard.on_progress(progress)
+            trip = guard.check(live=live, trajectory=path, elapsed_s=progress*path.duration_s, now=time.monotonic())
+            if trip is not None:
+                self.joints = actual
+                return {"status": "guard_trip", "message": f"guard tripped ({trip.get('kind')})", "progress": float(progress),
+                        "error_code": None, "sent": True, "cancel_requested": False, "final_position_rad": list(actual),
+                        "goal_gap_rad": None, "trip": trip}
+        self.joints = actual
+        return {"status": "succeeded", "message": "SUCCESSFUL", "progress": 1., "error_code": 0, "sent": True,
+                "cancel_requested": False, "final_position_rad": list(actual), "goal_gap_rad": 0.}
 
 
 @unittest.skipUnless(BUNDLE.exists(), "The assembly sphere bundle is separate evidence")
@@ -253,6 +297,54 @@ class FollowConstraintTests(unittest.TestCase):
             radii.append(np.linalg.norm(offset-(offset @ up)*up))
         self.assertLess(max(radii)-min(radii), .002)                                  # on the door's own circle
         self.assertEqual(self.store.load("cabinet door")["pivot_base"], self.record["pivot_base"])   # the stored record is not rewritten
+
+    def compliant_door(self, shift):
+        """The bench door's hinge as the record has it; the real one `shift` metres away in the plane."""
+        from rammp_adl.constraints import rotation_about
+        axis = np.asarray(HINGE["axis_base"])/np.linalg.norm(HINGE["axis_base"])
+        truth = np.asarray(HINGE["pivot_base"])+np.asarray(shift)
+        client = YieldingClient(self.chain, true_pivot=truth, axis=axis, knuckle=.45)
+        self.record.update(HINGE)
+        backend, world = self.backend(client)
+        backend.compliant_pull = True
+        return client, backend, world, truth, axis
+
+    def test_a_compliant_pull_finds_the_real_hinge_and_finishes_on_it(self):
+        client, backend, world, truth, axis = self.compliant_door([.012, -.009, 0.])      # 15 mm from the modelled hinge
+        outcome = self.follow(backend, world, 1.)
+        self.assertEqual(outcome.status, "succeeded")
+        data = outcome.evidence[0]["data"]
+        pull = data["pull"]
+        self.assertTrue(pull["compliant"])
+        self.assertEqual(len(pull["stretches"]), 2)                                   # a first stretch, then the rest re-planned
+        self.assertTrue(all(o["impedance"] == backend.pull_impedance and o["path_tolerance_rad"] == backend.pull_path_tolerance_rad
+                            for o in client.options_seen))
+        fitted = np.asarray(pull["stretches"][-1]["fit"]["pivot"])
+        self.assertLess(np.linalg.norm((fitted-truth)-((fitted-truth) @ axis)*axis), .004)
+        self.assertAlmostEqual(data["achieved"], 1., delta=.03)                         # measured, not commanded
+        self.assertGreater(pull["peak_force_n"], 0.)
+        self.assertLess(pull["peak_force_n"], backend.pull_force_limit_n)
+
+        def off_the_door(path):
+            worst = 0.
+            for time_s in np.linspace(0., path.duration_s, 40):
+                offset = tool_frame(self.chain, path.sample(time_s).position)[:3, 3]-truth
+                flat = offset-(offset @ axis)*axis
+                worst = max(worst, abs(np.linalg.norm(flat)-np.linalg.norm(
+                    (tool_frame(self.chain, GRASP_JOINTS)[:3, 3]-truth)-((tool_frame(self.chain, GRASP_JOINTS)[:3, 3]-truth) @ axis)*axis)))
+            return worst
+        self.assertLess(off_the_door(client.sent[1]), off_the_door(client.sent[0])/2)   # the re-planned stretch follows the door
+
+    def test_a_door_that_pushes_back_past_the_force_limit_stops_the_pull(self):
+        client, backend, world, truth, axis = self.compliant_door([.03, -.03, 0.])
+        backend.pull_force_limit_n = 5.
+        with self.assertRaises(BackendFailure) as caught:
+            self.follow(backend, world, 1.)
+        self.assertEqual(caught.exception.code, "model_mismatch")
+        attempt = self.store.load("cabinet door")["attempts"][-1]
+        self.assertEqual(attempt["trip"]["kind"], "contact")
+        self.assertGreater(attempt["trip"]["force_n"], 5.)
+        self.assertEqual(len(client.sent), 1)
 
     def test_out_of_reach_the_part_swivels_evenly_between_the_pads(self):
         # The wrist cannot turn more than 0.3 rad from where it holds the pull; the pull runs along the hinge.

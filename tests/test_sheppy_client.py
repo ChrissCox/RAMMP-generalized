@@ -142,6 +142,20 @@ class ExecutorGateTests(unittest.TestCase):
             refusal("not a trajectory", (0.,)*7)
 
 
+class ImpedanceGainTests(unittest.TestCase):
+    def test_the_drivers_own_gains_and_softer_ones_pass_and_stiffer_or_harder_ones_do_not(self):
+        from rammp_adl.motion.sheppy_client import IMPEDANCE_KQ_MAX, IMPEDANCE_TORQUE_MAX, impedance_problems
+        own = {"kq": IMPEDANCE_KQ_MAX, "zeta": .7, "torque_limit": IMPEDANCE_TORQUE_MAX}
+        self.assertEqual(impedance_problems(own), [])
+        self.assertEqual(impedance_problems({**own, "kq": [v/2. for v in IMPEDANCE_KQ_MAX]}), [])
+        self.assertTrue(impedance_problems({**own, "kq": [v*1.1 for v in IMPEDANCE_KQ_MAX]}))          # stiffer than teleop
+        self.assertTrue(impedance_problems({**own, "torque_limit": [40.]*4+[9.]*3}))                    # past the URDF effort limit
+        self.assertTrue(impedance_problems({**own, "kq": [0.]+list(IMPEDANCE_KQ_MAX[1:])}))
+        self.assertTrue(impedance_problems({**own, "zeta": 0.}))
+        self.assertTrue(impedance_problems({**own, "kq": IMPEDANCE_KQ_MAX[:6]}))
+        self.assertTrue(impedance_problems({"kq": IMPEDANCE_KQ_MAX}))
+
+
 class GripperUnitTests(unittest.TestCase):
     def test_knuckle_radians_normalize_onto_the_wire_setpoint(self):
         self.assertAlmostEqual(setpoint_from_knuckle(KNUCKLE_CLOSED_RAD), 1., places=12)

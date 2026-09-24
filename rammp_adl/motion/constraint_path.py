@@ -128,13 +128,14 @@ def retime(spline, total, *, rate_limits, value_rate, value_accel, smoothing_s=.
 
 
 def constraint_trajectory(values, knots, *, rate_limits, value_rate, value_accel, provenance, smoothing_s=.4,
-                          dt=SAMPLE_DT_S):
+                          dt=SAMPLE_DT_S, hold_s=0.):
     """The planner's waypoint solutions flown as one trajectory; returns it, its timing and the spline.
 
     The first waypoint is the start state, held for one sample like the planner's own
     first waypoint, so the wire message has the planner's shape: positions and
-    velocities, the start one step ahead. If rounding leaves any joint over its rate
-    limit, the whole pass is slowed until none is.
+    velocities, the start one step ahead. hold_s holds it longer: a compliant pull
+    waits there while the driver's impedance spring fades in. If rounding leaves any
+    joint over its rate limit, the whole pass is slowed until none is.
     """
     spline = knot_spline(values, knots)
     total = float(values[-1])
@@ -148,8 +149,12 @@ def constraint_trajectory(values, knots, *, rate_limits, value_rate, value_accel
     if over > 1.:
         times, velocities, value_rate_out = times*over, velocities/over, value_rate_out/over
     shift = times[1]
+    times = np.concatenate([[0.], times[1:]+max(0., float(hold_s))])
     rows = [(float(t+shift), tuple(float(v) for v in q), tuple(float(v) for v in qd), None)
             for t, q, qd in zip(times, positions, velocities)]
+    if hold_s > 0.:
+        rows.insert(1, (float(shift+hold_s), rows[0][1], rows[0][2], None))
+        times, value = np.insert(times, 1, hold_s), np.insert(value, 1, 0.)
     trajectory = trajectory_from_planner(JOINTS, rows, provenance=provenance)
     timing = Timing(tuple(float(t) for t in np.concatenate([[0.], times+shift])),
                     tuple(float(v) for v in np.concatenate([[0.], value])))

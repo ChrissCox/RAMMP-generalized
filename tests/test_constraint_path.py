@@ -77,6 +77,16 @@ class ConstraintTrajectoryTests(unittest.TestCase):
         # 90 degrees at 0.3 rad/s with gentle ends: a few seconds, not a minute.
         self.assertLess(trajectory.duration_s, values[-1]/.3+2.)
 
+    def test_a_hold_keeps_the_start_before_moving_and_delays_everything_after(self):
+        values, knots, plain, plain_timing, _ = self.build()
+        _, _, held, timing, _ = self.build(hold_s=.5)
+        self.assertAlmostEqual(held.duration_s, plain.duration_s+.5, places=9)
+        still = [p for p in held.points if p.time_s <= .5+held.points[1].time_s+1e-9]
+        self.assertTrue(all(p.state.position == held.points[0].state.position and not any(p.state.velocity) for p in still))
+        self.assertEqual(executor_problems(held), [])
+        self.assertEqual(timing.value_at(.5), 0.)
+        self.assertAlmostEqual(timing.time_at(values[5]), plain_timing.time_at(values[5])+.5, places=9)
+
     def test_tighter_joint_limits_slow_the_whole_pass(self):
         fast = self.build()[2]
         slow = self.build(rate_limits=[v/2. for v in LIMITS])[2]
