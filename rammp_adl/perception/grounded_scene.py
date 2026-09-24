@@ -443,7 +443,7 @@ class GroundedScene:
         the surface entity descriptor the handle is attached to.
         """
         from ..constraints import (apply_parameters, context_constraint, history_summary, load_demonstration,
-                                   metric_constraint, next_parameters, slug as constraint_slug)
+                                   metric_constraint, next_parameters, settled_motion, slug as constraint_slug)
 
         async def run():
             with self._lock:
@@ -485,8 +485,15 @@ class GroundedScene:
                                          f"{'right' if side == 'left' else 'left'} edge; model said {result.status}: {result.detail[:120]}"}
             else:
                 raise SceneError(result.status, result.detail)
+            # Which way the part moves is settled by the attempt that moved it, not re-proposed after a trip.
+            settled = settled_motion(previous) if previous and proposal.get("kind") == previous.get("kind") else None
+            overruled = {key: proposal.get(key) for key, value in (settled or {}).items() if proposal.get(key) != value}
+            if overruled:
+                proposal = {**proposal, **settled}
             metric = metric_constraint(proposal, handle["geometry"], handle["camera_pose"], constraint_id=constraint_id,
                                        entity_id=entity_id, label=label, surface_entity_id=surface_id, door=door)
+            if overruled:
+                metric["settled_locally"] = {"kept": dict(settled), "proposed": overruled}
             if previous:
                 metric["attempts"] = previous.get("attempts", [])
                 metric["parameters_version"] = previous.get("parameters_version", 1)+1

@@ -207,6 +207,24 @@ def history_summary(record, *, limit=8):
             for a in attempts]
 
 
+def settled_motion(record, *, moved_rad=.05):
+    """The hinge side and opening the part has already been moved with, or None.
+
+    The first attempt that moved the part settles which way it moves, a camera-verified one
+    before any other: a later attempt the other way says nothing against it. A door without
+    a stop can be forced the wrong way, and was: on 2026-09-24 a cabinet door that had been
+    pulled open to 55 degrees was pushed 33 degrees into its cabinet after one pull tripped.
+    How far the hinge is and how hard to pull stay open to proposals.
+    """
+    moved = [a for a in record.get("attempts", []) if float(a.get("achieved") or 0.) >= moved_rad]
+    verified = [a for a in moved if (a.get("progress") or {}).get("measured_turn_rad") is not None]
+    if not moved:
+        return None
+    parameters = (verified or moved)[0]["parameters"]
+    settled = {key: parameters.get(key) for key in ("hinge_side", "opening") if parameters.get(key) is not None}
+    return settled or None
+
+
 def next_parameters(record):
     """A local refinement when Astra repeats parameters that already failed.
 
@@ -215,7 +233,9 @@ def next_parameters(record):
     trips. Move the width toward whichever neighbouring attempt got further,
     or step away from a failed value when there is nothing better yet.
     """
-    attempts = [a for a in record.get("attempts", []) if a["parameters"].get("door_width_m") is not None]
+    # Only attempts that moved the part the way this record moves it say anything about its width.
+    attempts = [a for a in record.get("attempts", []) if a["parameters"].get("door_width_m") is not None
+                and all(a["parameters"].get(key, record.get(key)) == record.get(key) for key in ("hinge_side", "opening"))]
     if not attempts or record["kind"] != "revolute":
         return None
     last = attempts[-1]

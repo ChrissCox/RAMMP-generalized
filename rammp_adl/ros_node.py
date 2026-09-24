@@ -491,7 +491,8 @@ def create_node():
                     continue
                 articulations.append(found)
                 shown = {k: found["record"].get(k) for k in ("constraint_id", "kind", "hinge_side", "opening", "door_width_m",
-                                                             "contact_effort_nm", "parameters_version", "measured_door")}
+                                                             "contact_effort_nm", "parameters_version", "settled_locally",
+                                                             "measured_door")}
                 self.get_logger().info(f"task {task_id}: constraint {json.dumps(shown)}; proposal: {found['proposal'].get('rationale', '')[:160]}")
             return articulations
 

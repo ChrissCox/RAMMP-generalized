@@ -6,7 +6,7 @@ import unittest
 import numpy as np
 
 from rammp_adl.constraints import (ConstraintStore, apply_parameters, context_constraint, history_summary,
-                                   image_axes, metric_constraint, next_parameters, record_attempt, rotation_about,
+                                   image_axes, metric_constraint, next_parameters, record_attempt, rotation_about, settled_motion,
                                    waypoints)
 from rammp_adl.contracts import ContractError
 from rammp_adl.motion.kinematics import quaternion_matrix
@@ -77,6 +77,31 @@ class MetricConstraintTests(unittest.TestCase):
         slide = waypoints(record(kind="prismatic", hinge_side="none", opening="pull", range=.2), tool, orientation, .05)
         self.assertEqual(len(slide), 3)
         np.testing.assert_allclose(np.subtract(slide[-1][1], tool), [-.05, 0., 0.], atol=1e-9)
+
+    def test_the_attempt_that_moved_the_part_settles_which_way_it_moves(self):
+        def attempt(opening, achieved, width=.45, turned=None):
+            return {"target": 1.57, "achieved": achieved, "status": "tripped", "progress": {"measured_turn_rad": turned},
+                    "parameters": {"door_width_m": width, "hinge_side": "left", "opening": opening}}
+        rec = record()
+        self.assertIsNone(settled_motion(rec))
+        rec["attempts"] = [attempt("pull", .02)]
+        self.assertIsNone(settled_motion(rec))                                  # a trip at the start moved nothing
+        # The bench on 2026-09-24: pulled to 55 degrees with the camera seeing the face turn, pulled again and
+        # tripped at 17, then pushed 33 degrees into the cabinet. Pulling is how this door opens.
+        rec["attempts"] = [attempt("pull", .96, turned=.91), attempt("pull", .30), attempt("push", .58)]
+        self.assertEqual(settled_motion(rec), {"hinge_side": "left", "opening": "pull"})
+        rec["attempts"] = [attempt("push", .58), attempt("pull", .96, turned=.91)]
+        self.assertEqual(settled_motion(rec)["opening"], "pull")                # camera-verified before merely moved
+        rec["attempts"] = [attempt("push", .58), attempt("pull", .30)]
+        self.assertEqual(settled_motion(rec)["opening"], "push")                # otherwise the first that moved it
+
+    def test_width_refinement_reads_only_attempts_made_the_same_way(self):
+        rec = record()
+        record_attempt(rec, task_id="t1", target=1., achieved=.15, status="tripped", detail="contact")
+        alone = next_parameters(rec)["door_width_m"]
+        rec["attempts"].append({"target": 1., "achieved": .9, "status": "tripped", "task_id": "t2",
+                                "parameters": {"door_width_m": .30, "hinge_side": "left", "opening": "push"}})
+        self.assertAlmostEqual(next_parameters(rec)["door_width_m"], alone)     # the push that got further is not evidence
 
     def test_outcomes_refine_the_width_and_the_store_keeps_them(self):
         rec = record()

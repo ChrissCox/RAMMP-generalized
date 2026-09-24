@@ -104,6 +104,28 @@ class DoorSceneTests(unittest.TestCase):
         self.assertLess(first[1][0], record["handle_position_m"][0])               # pulling brings the handle toward the robot
         self.assertIsNotNone(self.store.load("wooden cabinet door"))
 
+    def test_a_door_that_has_been_pulled_open_is_not_pushed_after_a_trip(self):
+        asyncio.run(self.scene.discover(self.reasoner, self.context, "open the cabinet"))
+        first = asyncio.run(self.scene.articulate(self.reasoner, self.context, "black_door_handle_1", store=self.store))["record"]
+        first["attempts"] = [
+            {"target": 1.57, "achieved": .96, "status": "planning_failed", "progress": {"measured_turn_rad": .91},
+             "parameters": {"door_width_m": first["door_width_m"], "hinge_side": "left", "opening": "pull"}},
+            {"target": 1.57, "achieved": .30, "status": "tripped", "progress": {"measured_turn_rad": None},
+             "parameters": {"door_width_m": first["door_width_m"], "hinge_side": "left", "opening": "pull"}}]
+        self.store.save(first)
+
+        async def push_instead(context, entity_id, **kwargs):
+            return ReasoningResult("OK", proposal={"status": "OK", "kind": "revolute", "hinge_side": "left", "opening": "push",
+                                                   "door_width_m": .25, "range": 1.57, "contact_effort_nm": 5.,
+                                                   "rationale": "the pull tripped; try pushing"})
+        self.reasoner.propose_constraint = push_instead
+        record = asyncio.run(self.scene.articulate(self.reasoner, self.context, "black_door_handle_1", store=self.store))["record"]
+        self.assertEqual(record["opening"], "pull")                                  # the way it has already opened
+        self.assertEqual(record["settled_locally"], {"kept": {"hinge_side": "left", "opening": "pull"}, "proposed": {"opening": "push"}})
+        self.assertAlmostEqual(record["door_width_m"], .25)                          # the hinge distance stays the model's to propose
+        first_step = waypoints(record, record["handle_position_m"], (0., 0., 0., 1.), .3)[-1]
+        self.assertLess(first_step[1][0], record["handle_position_m"][0])             # toward the robot, not into the cabinet
+
 
 if __name__ == "__main__":
     unittest.main()
