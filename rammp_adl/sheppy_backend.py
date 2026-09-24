@@ -900,9 +900,50 @@ class SheppyArmBackend:
     constraint_tolerance_m, constraint_tolerance_deg = .004, 2.
     #: Wrist lags tried, least first, when the wrist cannot turn all the way with a part that may swivel in the grasp.
     swivel_lags = (.25, .5, .75, 1.)
+    #: Where a cabinet hinge turns, relative to the door: a concealed hinge's line lies about a door's
+    #: thickness inside the hinge-side edge and just behind the face. The bench's door, fitted from the
+    #: wrist depth while it swung 26 degrees (2026-09-24): 14.8 mm inside the edge, 12.2 mm behind the face.
+    hinge_inset_m, hinge_depth_m = .015, .012
     #: Ask the model for a second opinion on how far the part moved, from the last frame. It gates
     #: nothing and costs a provider request per pull, so it is off unless the operator turns it on.
     model_progress_check = False
+
+    def _hinge_at_contact(self, record, position, orientation):
+        """The record with its hinge placed from what the arm measured up close; the record itself when it cannot be.
+
+        Discovery sees the door from half a metre and its face a few degrees off; the standoff's close view,
+        carried in the tool frame since the grasp, is the face to turn about. The hinge line is vertical in
+        that face, the measured edge offset from the pull (unscaled) less the inset along it, the depth behind
+        it. On the bench the discovery hinge was 17 mm in front of and 7 mm short of the one the door swung about.
+        """
+        import numpy as np
+        from .constraints import rotation_about
+        side = record.get("hinge_side")
+        offsets = (record.get("measured_door") or {}).get("handle_offsets_m") or {}
+        if record["kind"] != "revolute" or side not in ("left", "right") or side not in offsets or self.contact_support is None:
+            return record, None
+        point, normal = (np.asarray(v, dtype=float) for v in self._support_in_base(position, orientation))
+        normal = normal/np.linalg.norm(normal)
+        axis = np.array([0., 0., 1.])-normal[2]*normal                   # vertical, in the measured face
+        if np.linalg.norm(axis) < .5:
+            return record, None                                          # a face near horizontal has no vertical hinge
+        axis /= np.linalg.norm(axis)
+        tool = np.asarray(position, dtype=float)
+        on_face = tool-normal*float((tool-point) @ normal)
+        toward = np.asarray(record["pivot_base"], dtype=float)-np.asarray(record["handle_position_m"], dtype=float)
+        toward -= (toward @ normal)*normal+(toward @ axis)*axis
+        if np.linalg.norm(toward) < 1e-6:
+            return record, None
+        toward /= np.linalg.norm(toward)
+        pivot = on_face+toward*max(float(offsets[side])-self.hinge_inset_m, .02)-normal*self.hinge_depth_m
+        lever = tool-pivot
+        moved = rotation_about(axis, .05) @ lever-lever
+        direction = 1. if (moved @ normal > 0) == (record["opening"] == "pull") else -1.
+        placed = {**record, "pivot_base": pivot.tolist(), "axis_base": axis.tolist(), "direction": direction}
+        return placed, {"placed_by": "close view", "pivot_base": [round(float(v), 4) for v in pivot],
+                        "moved_mm": round(1000*float(np.linalg.norm(pivot-np.asarray(record["pivot_base"], dtype=float))), 1),
+                        "axis_turned_deg": round(math.degrees(math.acos(min(1., abs(float(axis @ np.asarray(record["axis_base"], dtype=float)
+                                                                                         /np.linalg.norm(record["axis_base"])))))), 2)}
 
     async def _plan_constraint(self, record, start, position, orientation, target, context, *, can_swivel):
         """The planner's solutions along the constraint, each planned from the last one, plan-only; nothing moves.
@@ -989,7 +1030,11 @@ class SheppyArmBackend:
         position, orientation = self._tool_pose(start)
         import numpy as np
         from .motion.kinematics import quaternion_matrix
-        axis = np.asarray(record["axis_base"], dtype=float)/np.linalg.norm(record["axis_base"])
+        arc, hinge = self._hinge_at_contact(record, position, orientation)     # what the pull turns about
+        if hinge is not None:
+            self.log(f"follow {constraint_id}: hinge placed from the close view, {hinge['moved_mm']:.0f} mm from discovery's, "
+                     f"axis turned {hinge['axis_turned_deg']:.1f} deg")
+        axis = np.asarray(arc["axis_base"], dtype=float)/np.linalg.norm(arc["axis_base"])
         # Pads closed across a part that runs along the hinge (a vertical pull on a vertical hinge) let the
         # part swivel between them, so the wrist need not turn the whole door angle: that is the reach a
         # target out of reach gets back. The effort guard still stops a grasp that binds.
@@ -1014,7 +1059,7 @@ class SheppyArmBackend:
             looking = asyncio.ensure_future(first_look()) if scene is not None else None
             began = time.monotonic()
             try:
-                chain = await self._plan_constraint(record, start, position, orientation, target, context, can_swivel=can_swivel)
+                chain = await self._plan_constraint(arc, start, position, orientation, target, context, can_swivel=can_swivel)
             finally:
                 if looking is not None:
                     initial_normal = await looking
@@ -1036,7 +1081,7 @@ class SheppyArmBackend:
             def tool_pose(joints):
                 tool_position, tool_orientation = self._tool_pose(tuple(joints))
                 return tool_position, quaternion_matrix(tool_orientation)
-            off = deviation(spline, values[-1], tool_pose, lambda value: constraint_pose(record, position, orientation, value, lag=lag))
+            off = deviation(spline, values[-1], tool_pose, lambda value: constraint_pose(arc, position, orientation, value, lag=lag))
             if off["distance_m"] > self.constraint_tolerance_m or math.degrees(off["turn_rad"]) > self.constraint_tolerance_deg:
                 status = "planning_failed"
                 detail = (f"between the planner's waypoints the pull leaves the {record['label']}'s path by {off['distance_m']*1000:.1f} mm "
@@ -1091,7 +1136,7 @@ class SheppyArmBackend:
                 raise BackendFailure("planning_failed", f"pulled to {achieved:.3f} {unit}; the next waypoint: {refusal}") from refusal
             if scene is not None and record["kind"] == "revolute" and initial_normal is not None:
                 normal, keyframe = await scene.surface_normal()
-                turned = None if normal is None else turn_between(initial_normal, normal, record["axis_base"])
+                turned = None if normal is None else turn_between(initial_normal, normal, arc["axis_base"])
                 measured.append({"value": achieved, "turned_rad": turned, "keyframe": None if keyframe is None else keyframe.capture_id})
                 if keyframe is not None:
                     try:
@@ -1133,7 +1178,7 @@ class SheppyArmBackend:
                 "constraint": {"constraint_id": constraint_id, "kind": record["kind"], "digest": record.get("digest"),
                                "parameters_version": record.get("parameters_version")},
                 "profile_id": profile["profile_id"], "target": target, "achieved": achieved, "unit": unit,
-                "steps": steps, "pull": {"trajectory_digest": trajectory.digest, "duration_s": trajectory.duration_s,
+                "steps": steps, "hinge": hinge, "pull": {"trajectory_digest": trajectory.digest, "duration_s": trajectory.duration_s,
                                          "planned_s": round(planned_s, 3), "wrist_lag": lag,
                                          "path_deviation_m": off["distance_m"], "path_turn_rad": off["turn_rad"]},
                 "peak_effort_nm": peak, "contact_effort_nm": record["contact_effort_nm"],
@@ -1153,7 +1198,7 @@ class SheppyArmBackend:
                     scores["local"] = progress_score(achieved=achieved, target=target, grasped=self.holding_id == entity_id,
                                                      verified=verified)
                 progress = {**scores, "measured_turn_rad": ([m["turned_rad"] for m in measured if m["turned_rad"] is not None] or [None])[-1],
-                            "verified_locally": verified}
+                            "verified_locally": verified, "hinge": hinge}
                 record_attempt(record, task_id=context.task_id, target=target, achieved=achieved, status=status,
                                detail=detail, peak_effort_nm=peak, trip=trip_info, progress=progress)
                 if self.constraint_store is not None:

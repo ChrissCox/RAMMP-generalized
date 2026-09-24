@@ -220,6 +220,40 @@ class FollowConstraintTests(unittest.TestCase):
         self.assertEqual(saved["attempts"][-1]["status"], "succeeded")
         self.assertEqual(saved["attempts"][-1]["achieved"], .5)
 
+    def test_the_hinge_is_placed_from_the_close_view_not_from_discovery(self):
+        # Run 8 on the bench: discovery put the hinge 17 mm in front of and 7 mm short of the line the door swung
+        # about, with its axis tilted 1.6 degrees; the arm dragged the pull off the door's arc until 5 Nm tripped.
+        from rammp_adl.constraints import rotation_about
+        client, backend, world = self.arc()
+        position, orientation = backend._tool_pose(GRASP_JOINTS)
+        rotation = quaternion_matrix(orientation)
+        p0, normal = np.asarray(position), -rotation[:, 2]                         # the face, square to the approach
+        face = p0-normal*.015                                                        # the pull stands 15 mm proud of it
+        up = np.array([0., 0., 1.])-normal[2]*normal
+        up /= np.linalg.norm(up)
+        toward = np.asarray(HINGE["pivot_base"])-p0
+        toward -= (toward @ normal)*normal+(toward @ up)*up
+        toward /= np.linalg.norm(toward)
+        true_pivot = face+toward*(.25-backend.hinge_inset_m)-normal*backend.hinge_depth_m
+        self.record.update(pivot_base=(true_pivot+normal*.017-toward*.007).tolist(),
+                           axis_base=(rotation_about(toward, np.radians(1.6)) @ up).tolist(),
+                           handle_position_m=p0.tolist(),
+                           measured_door={"entity_id": "cabinet_door_surface", "width_m": .27, "height_m": .43,
+                                          "handle_offsets_m": {"left": .25, "right": .02, "top": .3, "bottom": .13}})
+        backend.contact_support = (rotation.T @ (face-p0), rotation.T @ normal)       # the standoff's view, in the tool frame
+        outcome = self.follow(backend, world, .5)
+        self.assertEqual(outcome.status, "succeeded")
+        hinge = outcome.evidence[0]["data"]["hinge"]
+        self.assertEqual(hinge["placed_by"], "close view")
+        self.assertAlmostEqual(hinge["moved_mm"], np.hypot(17., 7.), delta=.5)
+        np.testing.assert_allclose(hinge["pivot_base"], true_pivot, atol=1e-4)
+        radii = []
+        for time_s in np.linspace(0., client.sent[0].duration_s, 80):
+            offset = np.asarray(backend._tool_pose(client.sent[0].sample(time_s).position)[0])-true_pivot
+            radii.append(np.linalg.norm(offset-(offset @ up)*up))
+        self.assertLess(max(radii)-min(radii), .002)                                  # on the door's own circle
+        self.assertEqual(self.store.load("cabinet door")["pivot_base"], self.record["pivot_base"])   # the stored record is not rewritten
+
     def test_out_of_reach_the_part_swivels_evenly_between_the_pads(self):
         # The wrist cannot turn more than 0.3 rad from where it holds the pull; the pull runs along the hinge.
         client, backend, world = self.arc()
