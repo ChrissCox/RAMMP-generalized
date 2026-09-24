@@ -174,7 +174,8 @@ def create_node():
                                   ("sphere_bundle_dir", "artifacts/jetson/real-world-ready/assembly/bundle-2"),
                                   ("touch_nm", 3.0), ("keyframe_feed_hz", 5.0), ("scene", "grounded"),
                                   ("face_model_path", "artifacts/models/face_detection_yunet_2023mar.onnx"),
-                                  ("keyframe_min_interval_s", 3.0), ("record_dir", "artifacts/bench"), ("scene_refresh", True), ("scene_refresh_interval_s", 30.0),
+                                  ("keyframe_min_interval_s", 3.0), ("record_dir", "artifacts/bench"), ("scene_refresh", False), ("scene_refresh_interval_s", 30.0),
+                                  ("model_progress_check", False),
                                   ("transit_speed_scale", 0.4), ("contact_speed_scale", 0.25), ("max_evidence_age_s", 600.0), ("max_viewpoints", 6), ("wrist_rgb_topic", "/wrist_camera/color/image_raw"),
                                   ("wrist_depth_topic", "/wrist_camera/aligned_depth_to_color/image_raw"),
                                   ("wrist_rgb_info_topic", "/wrist_camera/color/camera_info"),
@@ -361,6 +362,7 @@ def create_node():
                 self.scene.bind_world(runtime.world)
             runtime.executor.confirmation_callback = self._profile_confirmation(runtime)
             runtime.backend.log = self.get_logger().info
+            runtime.backend.model_progress_check = bool(self.get_parameter("model_progress_check").value)
             if self.get_parameter("record_dir").value:
                 record_dir = Path(self.get_parameter("record_dir").value)
                 runtime.backend.record_root = record_dir if record_dir.is_absolute() else Path(runtime.catalog.root)/record_dir

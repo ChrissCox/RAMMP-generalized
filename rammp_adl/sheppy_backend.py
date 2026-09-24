@@ -900,6 +900,9 @@ class SheppyArmBackend:
     constraint_tolerance_m, constraint_tolerance_deg = .004, 2.
     #: Wrist lags tried, least first, when the wrist cannot turn all the way with a part that may swivel in the grasp.
     swivel_lags = (.25, .5, .75, 1.)
+    #: Ask the model for a second opinion on how far the part moved, from the last frame. It gates
+    #: nothing and costs a provider request per pull, so it is off unless the operator turns it on.
+    model_progress_check = False
 
     async def _plan_constraint(self, record, start, position, orientation, target, context, *, can_swivel):
         """The planner's solutions along the constraint, each planned from the last one, plan-only; nothing moves.
@@ -1106,7 +1109,7 @@ class SheppyArmBackend:
                     raise BackendFailure("goal_unobserved", detail)
                 verified = True
             scores["local"] = progress_score(achieved=achieved, target=target, grasped=True, verified=verified)
-            reasoner = getattr(scene, "reasoner", None)
+            reasoner = getattr(scene, "reasoner", None) if self.model_progress_check else None
             if reasoner is not None and frames:
                 try:
                     judged = await reasoner.verify_progress(

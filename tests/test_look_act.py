@@ -276,6 +276,7 @@ class LookActTests(unittest.TestCase):
         turned = rotation_about(np.asarray(HINGE["axis_base"]), HINGE["direction"]*.3) @ initial
         reasoner = ScriptedReasoner(score=4)
         backend, world = self.door(reasoner, [initial.tolist(), turned.tolist()])
+        backend.model_progress_check = True                                                  # the operator's opt-in second opinion
         outcome = self.follow(backend, world, .3)
         data = outcome.evidence[0]["data"]
         self.assertTrue(data["verified_locally"])
@@ -289,6 +290,15 @@ class LookActTests(unittest.TestCase):
         self.assertEqual(saved["attempts"][-1]["progress"]["local"], 4)
         self.assertEqual(saved["demonstration"]["frames"], 2)                                 # before and after the pull
         self.assertTrue((self.store.directory/saved["demonstration"]["folder"]/"manifest.json").is_file())
+
+    def test_without_the_opt_in_the_pull_asks_the_model_nothing(self):
+        turned = rotation_about(np.asarray(HINGE["axis_base"]), HINGE["direction"]*.3) @ np.array([-1., 0., 0.])
+        reasoner = ScriptedReasoner(score=4)
+        backend, world = self.door(reasoner, [[-1., 0., 0.], turned.tolist()])
+        data = self.follow(backend, world, .3).evidence[0]["data"]
+        self.assertTrue(data["verified_locally"])                                            # the camera's own check stands
+        self.assertNotIn("model", data["progress"])
+        self.assertEqual(reasoner.calls, [])
 
     def test_a_face_not_seen_after_the_pull_is_unobserved_not_contradicted(self):
         backend, world = self.door(ScriptedReasoner(score=3), [[-1., 0., 0.], None])
