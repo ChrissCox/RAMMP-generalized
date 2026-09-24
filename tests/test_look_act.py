@@ -152,6 +152,38 @@ class LookActTests(unittest.TestCase):
         self.assertLessEqual(np.linalg.norm(reasoner.calls[-1][2]["shift_so_far_m"]), .08+1e-9)
         self.assertLessEqual(abs(reasoner.calls[-1][2]["yaw_so_far_deg"]), 15.+1e-9)
 
+    def test_a_sub_centimetre_nudge_counts_as_centred(self):
+        reasoner = ScriptedReasoner(corrections=[((.004, .003, 0.), 1.)])
+        backend, world = self.backend(reasoner)
+        outcome = self.grasp_move(backend, world)
+        alignment = outcome.evidence[0]["data"]["alignment"]
+        self.assertTrue(alignment["converged"])
+        self.assertEqual(alignment["calls"], 1)
+        self.assertEqual(len(self.client.sent), 1)                                          # straight to the approach, no shift
+        np.testing.assert_allclose(alignment["shift_m"], [0., 0., 0.])
+
+    def test_the_final_approach_ignores_the_measured_surface_under_the_gripper_and_nothing_proud_of_it(self):
+        from rammp_adl.motion.collision_guard import CollisionGuard
+        guards = []
+        backend, world = self.backend(None)
+        factory = backend.guard_factory
+        backend.guard_factory = lambda **options: guards.append(options) or factory(**options)
+        self.scene.entities = {"handle_1": {"grasp": {"support": {"point_m": [.6, .1, .3], "normal": [-1., 0., 0.]}}}}
+        self.grasp_move(backend, world)
+        target_ball, surface_ball = guards[-1]["exclusions"]
+        self.assertEqual(target_ball, ((.58, .1, .3), .10))
+        foot = np.array([.6, .1, .3])
+        on_face_far = foot+np.array([0., .105, 0.])
+        proud_far = on_face_far+np.array([-.03, 0., 0.])                                      # 3 cm in front of the door face
+        self.assertEqual(len(CollisionGuard.excluded(np.array([on_face_far, proud_far]), [surface_ball])), 1)
+        centre, radius = surface_ball
+        self.assertAlmostEqual(radius-np.linalg.norm(np.asarray(centre)-foot), backend.surface_protrusion_m, places=9)
+        # Leaving the handle keeps the same surface out of the guard, placed from where the tool is.
+        asyncio.run(backend.look("back", execution_context(world)))
+        departing = guards[-1]["exclusions"]
+        self.assertEqual(len(departing), 2)
+        self.assertAlmostEqual(departing[1][1], radius, places=9)
+
     def test_without_a_reasoner_or_look_act_the_geometric_target_is_used(self):
         backend, world = self.backend(None)
         outcome = self.grasp_move(backend, world)

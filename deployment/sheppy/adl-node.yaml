@@ -1,0 +1,24 @@
+# The RAMMP-generalized adl node for ~/rammp-deployments/december_2026/sheppy-manifest.yaml.
+# It is not in the upstream manifest, so a deployment update removes it. Re-add it with
+#   python tools/sheppy_adl_node.py install --armed      (or without --armed for a client that never moves)
+# then load it with `sheppy up adl --manifest sheppy-manifest.yaml` (sheppy restart reuses the loaded spec).
+# The node starts from the checkout named in ~/.config/rammp-bench/active-root, so an Onyx hardware run tests
+# its own worktree; the file names /home/abra/RAMMP-generalized between runs.
+name: adl
+description: RAMMP-generalized task-level ADL autonomy, a client of the arm, planner and cameras
+select: single
+alternatives:
+  - id: rammp_adl_sheppy
+    kind: process
+    command: "bash -lc 'cd \"$(cat ~/.config/rammp-bench/active-root 2>/dev/null || echo /home/abra/RAMMP-generalized)\" && export PYTHONNOUSERSITE=1 RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && source /opt/ros/humble/setup.bash && source /home/abra/rammp_deps_ws/install/setup.bash && source artifacts/jetson/ros-install/setup.bash && source .venv/bin/activate && exec python -m rammp_adl.ros_node --ros-args -p backend:=sheppy -p enable_astra:=true -p context_path:=config/sheppy-bench.context.json -p commissioned:=@ARMED@ -p arm_motion:=@ARMED@ -p capabilities:=\"local_geometry,cloud_grounding,curobo_transit,trajectory_execution,local_retention_monitor,live_collision_guard,contact_monitor,curobo_online_replanning,continuous_trajectory_handoff,calibrated_aperture,calibrated_grasp,support_detection,curobo_constrained_path\"'"
+    publishes:
+      - /rammp/safety/status
+      - /rammp/world_state
+      - /execute_joint_trajectory
+      - /setpoint/gripper
+    subscribes:
+      - /joint_states
+      - /wrist_camera/color/image_raw
+      - /wrist_camera/color/camera_info
+      - /wrist_camera/aligned_depth_to_color/image_raw
+      - /wrist_camera/aligned_depth_to_color/camera_info

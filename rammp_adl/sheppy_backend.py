@@ -195,6 +195,11 @@ class SheppyArmBackend:
         self.log = lambda message: None                 # the node replaces this with its logger
         self.record_root = None                         # artifacts/bench: guard trips are saved for offline replay
         self.at_contact = False                         # the tool is parked where it touches something on purpose
+        # The surface the grasped part stands on (a door face under its pull, a table under a cup), kept in the
+        # tool frame from the moment of contact so it stays right while the part moves with the hand.
+        self.contact_support = None
+        self.surface_disk_m, self.surface_protrusion_m = .11, .02
+        self.align_done_m, self.align_done_deg = .008, 3.
         self.last_trajectory = None                     # the last path flown to completion: the way out is the way in
         self.events = []
 
@@ -344,7 +349,11 @@ class SheppyArmBackend:
             # still beside the fingers, and is exempt for this move only.
             live = self.client.live_joints()
             if live is not None and self.chain is not None:
-                exclusions.append((self._tool_pose(live["position_rad"])[0], self.grasp_exclusion_m))
+                tool_position, tool_orientation = self._tool_pose(live["position_rad"])
+                exclusions.append((tool_position, self.grasp_exclusion_m))
+                if self.contact_support is not None:
+                    point, normal = self._support_in_base(tool_position, tool_orientation)
+                    exclusions.append(self._surface_exclusion(point, normal, tool_position))
         try:
             trajectory, planning = await self.client.plan_to_pose(position, orientation, cancel_event=context.cancel_event)
         except SheppyClientError as exc:
@@ -402,6 +411,47 @@ class SheppyArmBackend:
         self.last_trajectory = trajectory
         return trajectory, planning, receipt, guard
 
+    def _surface_exclusion(self, point, normal, target):
+        """A ball that holds the measured surface under the target and at most surface_protrusion_m in front of it.
+
+        The guard's finger spheres are coarse (3.5 cm) and its margin is 3 cm, so a hand whose fingertips
+        stop a centimetre off a door face reads the face as an obstacle. This exempts only that face: a
+        disk of surface_disk_m around the target's foot, and nothing standing proud of it by more than
+        the protrusion. Everything beyond, and anything on the face taller than that, is still checked.
+        """
+        import numpy as np
+        point, normal, target = (np.asarray(v, dtype=float) for v in (point, normal, target))
+        normal = normal/np.linalg.norm(normal)
+        foot = target-normal*float((target-point) @ normal)
+        rho, delta = self.surface_disk_m, self.surface_protrusion_m
+        behind = (rho*rho-delta*delta)/(2.*delta)
+        return tuple(float(v) for v in foot-normal*behind), float(behind+delta)
+
+    def _entity_support(self, entity_id):
+        records = getattr(self.scene, "entities", None) or {}
+        support = ((records.get(entity_id) or {}).get("grasp") or {}).get("support")
+        return (support["point_m"], support["normal"]) if support else None
+
+    def _support_in_base(self, tool_position, tool_orientation):
+        import numpy as np
+        from .motion.kinematics import quaternion_matrix
+        rotation = quaternion_matrix(tuple(tool_orientation))
+        point_tool, normal_tool = self.contact_support
+        return rotation @ point_tool+np.asarray(tool_position), rotation @ normal_tool
+
+    def _remember_support(self, support):
+        """Store the contact's surface in the tool frame, from where the tool measurably is."""
+        import numpy as np
+        from .motion.kinematics import quaternion_matrix
+        live = self.client.live_joints()
+        if support is None or live is None or self.chain is None:
+            self.contact_support = None
+            return
+        position, orientation = self._tool_pose(live["position_rad"])
+        rotation = quaternion_matrix(tuple(orientation))
+        self.contact_support = (rotation.T @ (np.asarray(support[0], dtype=float)-np.asarray(position)),
+                                rotation.T @ np.asarray(support[1], dtype=float))
+
     async def _back_out(self, context, exclusions=()):
         """Retrace the last completed path, empty-handed, from where it ended; True if the arm is now back at its start."""
         path = self.last_trajectory
@@ -412,7 +462,7 @@ class SheppyArmBackend:
         receipt = await self.client.execute(reversed_trajectory(path), cancel_event=context.cancel_event,
                                             guard=self._guard(exclusions=list(exclusions)))
         if receipt["status"] == "succeeded":
-            self.current_pose, self.at_contact = None, False
+            self.current_pose, self.at_contact, self.contact_support = None, False, None
         return receipt["status"] == "succeeded"
 
     LOOK_HINTS = ("left", "right", "up", "down", "back", "closer")
@@ -454,7 +504,7 @@ class SheppyArmBackend:
         await self._own("look", context)
         try:
             trajectory, planning, receipt, _ = await self._step_to(position, orientation, context, safety_class="transit")
-            self.current_pose, self.at_contact = None, False
+            self.current_pose, self.at_contact, self.contact_support = None, False, None
             return {"hint": hint, "position_m": list(position), "orientation_xyzw": list(orientation),
                     "duration_s": trajectory.duration_s, "planning": planning, "receipt_status": receipt["status"]}
         finally:
@@ -514,6 +564,13 @@ class SheppyArmBackend:
                 record["steps"].append({"keyframe": keyframe.capture_id, "status": "DONE", "rationale": result.detail[:200]})
                 break
             delta_camera = np.clip(np.asarray(result.proposal["delta_camera_m"], dtype=float), -self.step_limit_m, self.step_limit_m)
+            if float(np.linalg.norm(delta_camera)) < self.align_done_m and abs(float(result.proposal["yaw_deg"])) < self.align_done_deg:
+                # A nudge smaller than the grasp can resolve is a model saying "centred" in other words;
+                # chasing it only spends the task's request budget.
+                record["converged"] = True
+                record["steps"].append({"keyframe": keyframe.capture_id, "status": "DONE within tolerance",
+                                        "delta_camera_m": delta_camera.tolist(), "rationale": result.detail[:200]})
+                break
             delta = keyframe.base_from_camera[:3, :3] @ delta_camera
             room = self.total_shift_limit_m-float(np.linalg.norm(total))
             if np.linalg.norm(delta) > room:
@@ -566,12 +623,21 @@ class SheppyArmBackend:
                 target_position, target_orientation, alignment = await self._look_act(target["entity_id"], pose, context)
             # Arriving at the grasp role means touching the target: depth
             # points around it are the intended contact, not an obstacle.
-            exclusions = [(tuple(target_position), self.grasp_exclusion_m)] if target["pose_role"] == "grasp" else []
+            exclusions, support = [], None
+            if target["pose_role"] == "grasp":
+                exclusions.append((tuple(target_position), self.grasp_exclusion_m))
+                support = self._entity_support(target["entity_id"])
+                if support is not None:
+                    exclusions.append(self._surface_exclusion(*support, target_position))
             trajectory, planning, receipt, _ = await self._step_to(target_position, target_orientation, context,
                                                                    safety_class="transit", exclusions=exclusions,
                                                                    announce="move_to_pose")
             previous, self.current_pose = self.current_pose, (target["entity_id"], target["pose_role"])
             self.at_contact = target["pose_role"] == "grasp"
+            if self.at_contact:
+                self._remember_support(support)
+            else:
+                self.contact_support = None
             facts = [assertion("at_pose", {"entity_id": target["entity_id"], "pose_role": target["pose_role"]})]
             if previous and previous != self.current_pose:
                 facts.append(assertion("at_pose", {"entity_id": previous[0], "pose_role": previous[1]}, "false"))

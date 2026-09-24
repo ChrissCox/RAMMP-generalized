@@ -16,6 +16,11 @@ from ..motion.kinematics import quaternion_xyzw_from_matrix
 from .geometry import PerceptionError
 
 GRIPPER_OPEN_M = .085          # nominal Robotiq 2F-85 stroke, as the aperture map assumes
+# How far the fingertips reach past the planner's tool_frame (end_effector_link + 0.12 m) along the approach:
+# the finger-tip collision meshes of the locked arm-gripper assembly (bundle-2), measured in that frame on
+# 2026-09-24 (z from -0.011 to +0.046 m). The tool frame sits at the root of the pads, not at their tips.
+FINGERTIP_REACH_M = .046
+SURFACE_CLEARANCE_M = .01      # fingertips stop this far off the surface the object stands on
 UP = np.array([0., 0., 1.])
 
 
@@ -205,11 +210,17 @@ def pose_roles(geometry, *, camera_position_base, gripper_open_m=GRIPPER_OPEN_M,
     minor = np.asarray(geometry["minor_axis"], dtype=float)
     fits_minor = geometry["extent_minor_m"]+clearance_m <= gripper_open_m
     strategy, position, x_axis, z_axis = "none", None, None, None
+    support_point = top-up*geometry["height_m"]            # the surface the object stands on, under its top
     if fits_minor and geometry["height_m"] <= top_grasp_max_height_m:
         strategy = "top_down"
         z_axis = -up
         x_axis = minor
         position = top-up*min(finger_depth_m, geometry["height_m"]/2.)
+        # The pads' root is the tool frame; their tips reach FINGERTIP_REACH_M further. On a shallow part
+        # (a pull 3 cm proud of a door) that is past the surface: stop where the tips clear it, and let the
+        # distal pads pinch the part.
+        elevation = float((position-support_point) @ up)
+        position = position+up*max(0., FINGERTIP_REACH_M+SURFACE_CLEARANCE_M-elevation)
     else:
         # Approach along one measured horizontal axis so the fingers close
         # across the other, from whichever end faces the camera.
@@ -249,6 +260,7 @@ def pose_roles(geometry, *, camera_position_base, gripper_open_m=GRIPPER_OPEN_M,
     if x_axis @ reference < 0:
         x_axis = -x_axis
     orientation = _frame(x_axis, z_axis)
+    clearance = float((position-support_point) @ up)-FINGERTIP_REACH_M if strategy == "top_down" else None
     roles = {"grasp": (position, orientation),
              "pregrasp": (position-z_axis*pregrasp_m, orientation),
              "retract": (position-z_axis*pregrasp_m, orientation),
@@ -259,4 +271,7 @@ def pose_roles(geometry, *, camera_position_base, gripper_open_m=GRIPPER_OPEN_M,
     return {"strategy": strategy,
             "roles": {name: {"position_m": [float(v) for v in pos], "orientation_xyzw": list(quat)} for name, (pos, quat) in roles.items()},
             "covariance": [float(v) for v in covariance.ravel()],
-            "reason": "", "gripper_open_m": gripper_open_m, "grasp_point_used": grasp_point_used}
+            "reason": "", "gripper_open_m": gripper_open_m, "grasp_point_used": grasp_point_used,
+            "fingertip_clearance_m": clearance,
+            "support": {"point_m": [float(v) for v in position-up*float((position-support_point) @ up)],
+                        "normal": [float(v) for v in up]}}

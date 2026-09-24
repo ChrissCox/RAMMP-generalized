@@ -6,8 +6,8 @@ import numpy as np
 from rammp_adl.motion.kinematics import quaternion_matrix
 from rammp_adl.perception.geometry import PerceptionError
 from rammp_adl.perception.keyframes import Keyframe
-from rammp_adl.perception.object_geometry import (box_to_pixels, object_geometry, points_in_region, pose_roles,
-                                                   support_plane, to_base)
+from rammp_adl.perception.object_geometry import (FINGERTIP_REACH_M, SURFACE_CLEARANCE_M, box_to_pixels, object_geometry,
+                                                   points_in_region, pose_roles, support_plane, to_base)
 
 from synthetic_scene import K, looking_at, looking_down, normalized_box, render
 
@@ -43,7 +43,7 @@ class GeometryTests(unittest.TestCase):
         roles = pose_roles(geometry, camera_position_base=frame.camera_position_base)
         self.assertEqual(roles["strategy"], "top_down")
         grasp = roles["roles"]["grasp"]
-        np.testing.assert_allclose(grasp["position_m"], [.30, .12, .05], atol=.012)
+        np.testing.assert_allclose(grasp["position_m"], [.30, .12, FINGERTIP_REACH_M+SURFACE_CLEARANCE_M], atol=.012)
         rotation = quaternion_matrix(tuple(grasp["orientation_xyzw"]))
         np.testing.assert_allclose(rotation[:, 2], [0., 0., -1.], atol=1e-6)         # tool points down
         self.assertAlmostEqual(abs(rotation[:, 0] @ np.array([0., 1., 0.])), 1., delta=.05)  # fingers close across the minor axis
@@ -95,6 +95,32 @@ class GeometryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FingertipClearanceTests(unittest.TestCase):
+    """The 2F-85's fingertips reach 4.6 cm past the planner's tool frame: a grasp keeps them off the surface the object stands on."""
+
+    def handle(self, height):
+        # A vertical bar on a door face at x = .6 whose normal faces the robot (-x).
+        return {"up": [-1., 0., 0.], "top_m": [.6-height, .1, .3], "centroid_m": [.6-height/2, .1, .3], "height_m": height,
+                "minor_axis": [0., 1., 0.], "major_axis": [0., 0., 1.], "extent_minor_m": .015, "extent_major_m": .11}
+
+    def test_a_shallow_handle_is_pinched_by_the_fingertips_without_them_touching_the_door(self):
+        roles = pose_roles(self.handle(.032), camera_position_base=[.2, .1, .3])
+        self.assertEqual(roles["strategy"], "top_down")
+        tool = np.asarray(roles["roles"]["grasp"]["position_m"])
+        elevation = .6-tool[0]
+        self.assertGreaterEqual(elevation-FINGERTIP_REACH_M, SURFACE_CLEARANCE_M-1e-9)   # fingertips a centimetre off the door
+        self.assertLess(elevation-FINGERTIP_REACH_M, .032)                                 # and still beside the bar, not in front of it
+        self.assertAlmostEqual(roles["fingertip_clearance_m"], elevation-FINGERTIP_REACH_M, places=6)
+        np.testing.assert_allclose(roles["support"]["point_m"], [.6, .1, .3], atol=1e-9)    # the door face under the grasp
+        np.testing.assert_allclose(roles["support"]["normal"], [-1., 0., 0.], atol=1e-9)
+
+    def test_a_tall_object_keeps_its_grasp_depth(self):
+        tall = dict(self.handle(.12), minor_axis=[0., 1., 0.])
+        roles = pose_roles(tall, camera_position_base=[.2, .1, .3])
+        np.testing.assert_allclose(roles["roles"]["grasp"]["position_m"], [.6-.12+.03, .1, .3], atol=1e-9)
+        self.assertGreater(roles["fingertip_clearance_m"], SURFACE_CLEARANCE_M)
 
 
 class WristChoiceTests(unittest.TestCase):
