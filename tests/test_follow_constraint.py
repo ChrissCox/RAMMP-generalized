@@ -196,7 +196,7 @@ class FollowConstraintTests(unittest.TestCase):
         outcome = asyncio.run(backend.move_to_pose(args, execution_context(world)))
         self.assertEqual(outcome.status, "succeeded")
         self.assertEqual(self.guards[-1]["exclusions"], [((.58, .1, .3), .10)])
-        self.assertIn("time scaled x2.5", client.sent[-1].provenance)
+        self.assertIn("time scaled x4", client.sent[-1].provenance)                      # the last centimetres into a grasp: contact speed
         # Parked at the handle, the next move away exempts what the fingers are beside, once it has left it no more.
         self.assertTrue(backend.at_contact)
         context = execution_context(world)

@@ -123,10 +123,10 @@ class DoorPlanExecutionTests(unittest.TestCase):
         self.assertEqual(facts.fact("released", {"entity_id": "handle_1", "support_id": "cabinet_door_surface"}), "true")
         self.assertEqual(facts.fact("gripper_empty", {"robot_id": "robot"}), "true")
         self.assertNotEqual(facts.fact("holding", {"entity_id": "handle_1"}), "true")
-        # Transits slowed, contact steps slowed more, the grasp exclusion applied on the grasp move only.
+        # Transits slowed; the last centimetres into the grasp and every constraint step slowed more.
         provenance = [t.provenance for t in self.client.sent]
-        self.assertTrue(provenance[0].endswith("x2.5") and provenance[1].endswith("x2.5") and provenance[-1].endswith("x2.5"))
-        self.assertTrue(all(p.endswith("x4") for p in provenance[2:-1]) and len(provenance) > 4)
+        self.assertTrue(provenance[0].endswith("x2.5") and provenance[-1].endswith("x2.5"))
+        self.assertTrue(all(p.endswith("x4") for p in provenance[1:-1]) and len(provenance) > 4)
         self.assertEqual(self.store.load("cabinet door")["attempts"][-1]["status"], "succeeded")
 
     def test_without_confirmation_nothing_moves(self):

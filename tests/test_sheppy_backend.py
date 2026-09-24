@@ -333,6 +333,21 @@ class BackendTests(unittest.TestCase):
         self.client.still = False
         self.assertFalse(run(self.backend.quiescent()))
 
+    def test_a_motion_skill_gets_a_bounded_moment_to_come_to_rest_and_says_why_when_it_does_not(self):
+        # Just after arriving near a contact the joints can ring for a moment: the strict still window restarts.
+        arrived = time.monotonic()
+        self.client.still_since_s = lambda: max(arrived+.3, time.monotonic()-10.) if time.monotonic() > arrived+.3 else None
+        self.assertTrue(run(self.backend.skill_quiescent("move_to_pose")))
+        self.assertGreaterEqual(time.monotonic()-arrived, .3+self.backend.stationary_duration_s-.05)
+        logged = []
+        self.backend.log = logged.append
+        self.client.still_since_s = lambda: None                                        # never comes to rest
+        started = time.monotonic()
+        self.assertFalse(run(self.backend.skill_quiescent("grasp")))
+        self.assertLess(time.monotonic()-started, self.backend.quiescence_grace_s+.2)
+        self.assertIn("not at rest", logged[-1])
+        self.assertTrue(run(self.backend.skill_quiescent("observe")))                   # observing moves nothing
+
     def test_declared_capabilities_name_their_gaps(self):
         registry = self.backend.registry(capabilities=PROVIDED_CAPABILITIES | {"live_collision_guard"},
                                          commissioned=False)

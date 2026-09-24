@@ -263,12 +263,36 @@ class SheppyArmBackend:
         """Held state read synchronously from the still window: safe from any thread, never waits."""
         return not getattr(self.client, "in_flight", False) and self.still_now()
 
+    quiescence_grace_s = 1.5                             # under the supervisor's 2 s bound on this query
+
     async def skill_quiescent(self, skill_id):
+        """Whether this skill's commands are done and the arm is at rest; a moving skill gets a moment to get there.
+
+        The client's execute() confirms rest by sampling every 20 ms; the still window here restarts on any
+        single joint-state message over the threshold, and near a contact the joints can ring for a moment
+        after arriving. So a motion skill is given quiescence_grace_s to come to rest before it is called
+        not quiescent, and when it does not, the log says what the joints were doing.
+        """
         if skill_id in self.active:
             return False
-        if skill_id in ("move_to_pose", "grasp", "release", "set_gripper", "follow_constraint"):
-            return await self.quiescent()
-        return True
+        if skill_id not in ("move_to_pose", "grasp", "release", "set_gripper", "follow_constraint"):
+            return True
+        deadline = time.monotonic()+self.quiescence_grace_s
+        while True:
+            if await self.quiescent():
+                return True
+            if time.monotonic() >= deadline:
+                self.log(f"{skill_id}: not at rest {self.quiescence_grace_s:.1f} s after its commands finished: {self.quiescence_report()}")
+                return False
+            await asyncio.sleep(.05)
+
+    def quiescence_report(self):
+        live = self.client.live_joints() if hasattr(self.client, "live_joints") else None
+        still_since = getattr(self.client, "still_since_s", lambda: None)()
+        velocity = None if live is None or live.get("velocity_rad_s") is None else max(abs(v) for v in live["velocity_rad_s"])
+        return {"in_flight": bool(getattr(self.client, "in_flight", False)), "joint_state_fresh": live is not None,
+                "still_for_s": None if still_since is None else round(time.monotonic()-still_since, 3),
+                "max_joint_velocity_rad_s": velocity}
 
     async def stop_skill(self, skill_id, reason):
         self.events.append({"event": "stop", "skill": skill_id, "reason": reason, "at": time.monotonic()})
@@ -705,8 +729,8 @@ class SheppyArmBackend:
                 if support is not None:
                     exclusions.append(self._surface_exclusion(*support, target_position))
             trajectory, planning, receipt, _ = await self._step_to(target_position, target_orientation, context,
-                                                                   safety_class="transit", exclusions=exclusions,
-                                                                   announce="move_to_pose")
+                                                                   safety_class="contact" if target["pose_role"] == "grasp" else "transit",
+                                                                   exclusions=exclusions, announce="move_to_pose")
             previous, self.current_pose = self.current_pose, (target["entity_id"], target["pose_role"])
             self.at_contact = target["pose_role"] == "grasp"
             if self.at_contact:

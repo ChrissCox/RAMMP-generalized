@@ -133,7 +133,7 @@ class LookActTests(unittest.TestCase):
         np.testing.assert_allclose(data["alignment"]["shift_m"], [.02, 0., 0.])
         np.testing.assert_allclose(data["commanded"]["position_m"], [.60, .1, .3])
         self.assertEqual(len(self.client.sent), 2)                                          # the standoff shift, then the approach
-        self.assertTrue(self.client.sent[0].provenance.endswith("x4") and self.client.sent[1].provenance.endswith("x2"))
+        self.assertTrue(self.client.sent[0].provenance.endswith("x4") and self.client.sent[1].provenance.endswith("x4"))  # both at contact speed
         self.assertEqual(reasoner.calls[0][2]["calls_remaining"], 5)
         self.assertEqual(reasoner.calls[1][2]["shift_so_far_m"], [.02, 0., 0.])
 
