@@ -20,8 +20,8 @@ import time
 
 from .sheppy_client import (
     DIFFERENCED, EXECUTE_ACTION, GRIPPER_SETPOINT_TOPIC, JOINT_STATE_TOPIC, JOINTS, PLANNER_NAMESPACE,
-    START_PREPENDED, SUCCESSFUL, SheppyClientError, describe_surface, impedance_problems, refusal, result_message,
-    rmw_refusal, setpoint_from_knuckle, trajectory_from_planner, wrap_diff)
+    START_PREPENDED, SUCCESSFUL, SheppyClientError, describe_surface, impedance_problems, impedance_wrap_problem, refusal,
+    result_message, rmw_refusal, setpoint_from_knuckle, trajectory_from_planner, wrap_diff)
 
 
 class SheppyArmClient:
@@ -280,10 +280,12 @@ class SheppyArmClient:
 
         impedance ({kq, zeta, torque_limit}) tracks the trajectory compliantly
         in the driver's joint impedance mode instead of stiffly: contact pushes
-        the arm off the reference rather than building force against it. The
-        driver's latest tracking error (desired - actual) is then passed to the
-        guard as live["tracking_error_rad"]. path_tolerance_rad bounds, in the
-        driver itself, how far any joint may be pushed off before it aborts.
+        the arm off the reference rather than building force against it.
+        path_tolerance_rad bounds, in the driver itself, how far any joint may
+        be pushed off before it aborts. The driver's feedback carries only the
+        measured joints and the fraction complete (kinova-gen3-ros2 1.0.1 leaves
+        its desired and error fields zero), so a guard reconstructs the tracking
+        error from the trajectory at that fraction.
         """
         receipt = {"status": "refused", "message": "", "progress": 0., "error_code": None,
                    "sent": False, "cancel_requested": False, "final_position_rad": None,
@@ -300,7 +302,7 @@ class SheppyArmClient:
             return receipt
         why = refusal(trajectory, live["position_rad"])
         if not why and impedance is not None:
-            why = "; ".join(impedance_problems(impedance))
+            why = "; ".join(impedance_problems(impedance)) or impedance_wrap_problem(trajectory, live["position_rad"])
         if not why and path_tolerance_rad is not None and not 0. < float(path_tolerance_rad) <= .35:
             why = "path tolerance outside (0, 0.35] rad"
         if why:
@@ -323,9 +325,6 @@ class SheppyArmClient:
 
         def feedback(message):
             receipt["progress"] = float(message.feedback.fraction_complete)
-            error = tuple(message.feedback.error.positions)
-            if len(error) == len(JOINTS):
-                receipt["tracking_error_rad"] = error
 
         receipt["sent"] = True
         handle = await self._await(self._execute.send_goal_async(goal, feedback_callback=feedback), 10.)
@@ -345,10 +344,7 @@ class SheppyArmClient:
                     break
                 if guard is not None:
                     guard.on_progress(receipt["progress"])
-                    live_now = self.live_joints()
-                    if live_now is not None and receipt.get("tracking_error_rad") is not None:
-                        live_now = {**live_now, "tracking_error_rad": receipt["tracking_error_rad"]}
-                    trip = guard.check(live=live_now, trajectory=trajectory,
+                    trip = guard.check(live=self.live_joints(), trajectory=trajectory,
                                        elapsed_s=receipt["progress"]*trajectory.duration_s,
                                        now=time.monotonic())
                     if trip is not None:

@@ -156,6 +156,18 @@ class ImpedanceGainTests(unittest.TestCase):
         self.assertTrue(impedance_problems({"kq": IMPEDANCE_KQ_MAX}))
 
 
+class ImpedanceWrapTests(unittest.TestCase):
+    def test_an_impedance_goal_near_a_continuous_joints_wrap_is_refused(self):
+        from rammp_adl.motion.sheppy_client import impedance_wrap_problem
+        start = (0., .262, -3.141, -2.269, 0., .96, 1.571)              # the bench start pose
+        near = trajectory_from_planner(JOINTS, [(.02, start, (0.,)*7, None), (.5, start, (0.,)*7, None)], provenance="t")
+        self.assertIn("joint 3", impedance_wrap_problem(near))
+        grasp = (-.53, .66, -2.57, -1.61, -.91, .62, 1.97)             # run 5's grasp: every continuous joint well inside
+        clear = trajectory_from_planner(JOINTS, [(.02, grasp, (0.,)*7, None), (.5, grasp, (0.,)*7, None)], provenance="t")
+        self.assertIsNone(impedance_wrap_problem(clear))
+        self.assertIn("joint 7", impedance_wrap_problem(clear, live=(-.53, .66, -2.57, -1.61, -.91, .62, 3.05)))
+
+
 class GripperUnitTests(unittest.TestCase):
     def test_knuckle_radians_normalize_onto_the_wire_setpoint(self):
         self.assertAlmostEqual(setpoint_from_knuckle(KNUCKLE_CLOSED_RAD), 1., places=12)

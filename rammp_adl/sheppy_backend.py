@@ -33,7 +33,7 @@ from .handlers import (BackendFailure, FollowConstraintHandler, GraspHandler, Mo
                        ObserveHandler, ReleaseHandler, SetGripperHandler, SkillOutcome)
 from .hardware_backend import HardwareObservationBackend
 from .motion.sheppy_client import (JOINT_VMAX, JOINTS, KNUCKLE_CLOSED_RAD, TOOL_FRAME_FROM_FLANGE_M, SheppyClientError,
-                                   reversed_trajectory, scale_trajectory_time)
+                                   impedance_wrap_problem, reversed_trajectory, scale_trajectory_time, wrap_diff)
 from .validation import GeometryCheck
 
 
@@ -1158,14 +1158,18 @@ class SheppyArmBackend:
                                   force_limit_n=self.pull_force_limit_n if compliant else None,
                                   jacobian=self._tool_jacobian if compliant else None,
                                   hold_s=self.pull_hold_s if compliant else 0.)
+                yielding = compliant and impedance_wrap_problem(trajectory) is None
+                if compliant and not yielding:
+                    self.log(f"follow {constraint_id}: this stretch crosses a continuous joint's +-pi, which the driver's "
+                             f"impedance mode mishandles; flown stiffly on the {'fitted' if fits else 'placed'} mechanism")
                 await context.feedback(event="constraint_motion", skill="follow_constraint", value=achieved+values[-1], unit=unit,
                                        waypoints=len(values)-1, duration_s=trajectory.duration_s)
                 self.log(f"follow {constraint_id}: {len(values)-1} waypoints to {achieved+values[-1]:.3f} {unit} planned in "
                          f"{time.monotonic()-began:.1f} s{f' with the wrist lagging {lag:.0%} of the turn' if lag else ''}; one "
-                         f"{trajectory.duration_s:.1f} s {'compliant ' if compliant else ''}pull, within {off['distance_m']*1000:.1f} mm of the path")
+                         f"{trajectory.duration_s:.1f} s {'compliant ' if yielding else ''}pull, within {off['distance_m']*1000:.1f} mm of the path")
                 self.last_trajectory = None                 # the way in to the part is no way out once it has moved
                 options = ({"impedance": impedance, "path_tolerance_rad": self.pull_path_tolerance_rad,
-                            "goal_tolerance_rad": self.pull_path_tolerance_rad} if compliant else {})
+                            "goal_tolerance_rad": self.pull_path_tolerance_rad} if yielding else {})
                 receipt = await self.client.execute(trajectory, cancel_event=context.cancel_event, guard=guard, **options)
                 peak, peak_force = max(peak, guard.peak_nm), max(peak_force, guard.peak_force_n)
                 trace += [joints for _, joints in guard.trace]
@@ -1191,6 +1195,7 @@ class SheppyArmBackend:
                 else:
                     achieved += commanded
                 pulls.append({"trajectory_digest": trajectory.digest, "duration_s": trajectory.duration_s, "commanded": commanded,
+                              "compliant": yielding,
                               "status": receipt["status"], "path_deviation_m": off["distance_m"], "path_turn_rad": off["turn_rad"],
                               "fit": None if fit is None else {k: fit[k] for k in fit if k in ("kind", "pivot", "radius", "turned",
                                                                                                  "travelled", "rms_m", "shift_m")}})
@@ -1366,9 +1371,9 @@ class PullGuard:
             return None
         import numpy as np
         error = live.get("tracking_error_rad")
-        if error is None:
+        if error is None:                           # the driver reports no error: the plan at its progress, less the measurement
             desired = trajectory.sample(min(max(float(elapsed_s), 0.), trajectory.duration_s)).position
-            error = [d-a for d, a in zip(desired, live["position_rad"])]
+            error = [wrap_diff(d, a) for d, a in zip(desired, live["position_rad"])]
         torque = np.asarray(self.stiffness)*np.asarray(error, dtype=float)
         if self.spring_baseline is None or elapsed_s <= self.hold_s:
             self.spring_baseline = torque

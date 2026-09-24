@@ -237,9 +237,14 @@ class Stack:
             if not await self.client.settle(timeout_s=10.):
                 return {"ok": False, "detail": "the arm is not still; reset refused"}
             live = self.client.live_joints()["position_rad"]
-            if max(abs(a-b) for a, b in zip(live, start)) < .02:
+            from rammp_adl.motion.sheppy_client import wrap_diff as _wrap
+            if max(abs(_wrap(a, b)) for a, b in zip(live, start)) < .02:
                 return {"ok": True, "detail": "already at the start pose", "gripper": opened["message"]}
-            trajectory, planning = await self.client.plan_to_joints(start)
+            # The short way round: a continuous joint read across +-pi from the recorded start would otherwise be
+            # planned the long way, most of a turn.
+            from rammp_adl.motion.sheppy_client import CONTINUOUS, wrap_diff
+            nearest = [q+wrap_diff(s, q) if i in CONTINUOUS else s for i, (q, s) in enumerate(zip(live, start))]
+            trajectory, planning = await self.client.plan_to_joints(nearest)
             receipt = await self.client.execute(scale_trajectory_time(trajectory, 1./CEILINGS["transit_speed_scale"]),
                                                 guard=GuardSet(effort=EffortGuard(CEILINGS["touch_nm"])))
             return {"ok": receipt["status"] == "succeeded", "detail": receipt["message"] or receipt["status"],

@@ -65,6 +65,27 @@ IMPEDANCE_KQ_MAX = (80., 80., 80., 80., 30., 30., 30.)
 IMPEDANCE_TORQUE_MAX = (39., 39., 39., 39., 9., 9., 9.)
 
 
+#: Continuous joints (1, 3, 5, 7) are reported wrapped to (-pi, pi]. The driver's joint impedance mode
+#: rate-limits a trajectory's joint target against its previous, wrapped reference without wrapping the
+#: difference (kinova-gen3-ros2 1.0.1 joint_impedance_mode.cpp, the max_step clamp): a target that crosses
+#: +-pi walks the reference the long way round and the spring drags the joint after it. On 2026-09-24 a
+#: 4 cm free-space move from the bench start pose (joint 3 at -3.141) swung joint 3 by about a radian.
+#: TODO: confirm against driver - fixed upstream? Until then no impedance goal comes within this of +-pi.
+CONTINUOUS = (0, 2, 4, 6)
+IMPEDANCE_WRAP_MARGIN_RAD = .25
+
+
+def impedance_wrap_problem(trajectory, live=None):
+    """Why an impedance goal would meet the driver's wrap fault, or None."""
+    rows = [point.state.position for point in trajectory.points]+([tuple(live)] if live is not None else [])
+    for joint in CONTINUOUS:
+        nearest = max(abs(float(row[joint])) for row in rows)
+        if nearest > math.pi-IMPEDANCE_WRAP_MARGIN_RAD:
+            return (f"joint {joint+1} reaches {nearest:.2f} rad, within {IMPEDANCE_WRAP_MARGIN_RAD} of +-pi, where the driver's "
+                    "impedance reference wraps the long way round")
+    return None
+
+
 def impedance_problems(gains):
     """Why these joint impedance gains must not be sent, as a list (empty when they may)."""
     try:

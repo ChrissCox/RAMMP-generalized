@@ -317,8 +317,11 @@ class FollowConstraintTests(unittest.TestCase):
         pull = data["pull"]
         self.assertTrue(pull["compliant"])
         self.assertEqual(len(pull["stretches"]), 2)                                   # a first stretch, then the rest re-planned
-        self.assertTrue(all(o["impedance"] == backend.pull_impedance and o["path_tolerance_rad"] == backend.pull_path_tolerance_rad
-                            for o in client.options_seen))
+        first, rest = client.options_seen
+        self.assertEqual((first["impedance"], first["path_tolerance_rad"]), (backend.pull_impedance, backend.pull_path_tolerance_rad))
+        # The rest takes joint 7 past 2.89 rad, where the driver's impedance reference wraps the long way: flown stiffly, on the fit.
+        self.assertIsNone(rest["impedance"])
+        self.assertEqual([stretch["compliant"] for stretch in pull["stretches"]], [True, False])
         fitted = np.asarray(pull["stretches"][-1]["fit"]["pivot"])
         self.assertLess(np.linalg.norm((fitted-truth)-((fitted-truth) @ axis)*axis), .004)
         self.assertAlmostEqual(data["achieved"], 1., delta=.03)                         # measured, not commanded
@@ -345,6 +348,20 @@ class FollowConstraintTests(unittest.TestCase):
         self.assertEqual(attempt["trip"]["kind"], "contact")
         self.assertGreater(attempt["trip"]["force_n"], 5.)
         self.assertEqual(len(client.sent), 1)
+
+    def test_the_spring_force_reads_a_joint_across_pi_as_near_not_a_turn_away(self):
+        backend, _ = self.backend(TrackingClient(knuckle=.45))
+        start = (0., .262, -3.1414, -2.269, 0., .96, 1.571)                   # the bench start pose: joint 3 on the wrap
+        from rammp_adl.motion.rolling import JointState, JointTrajectory, TrajectoryPoint
+        still = JointState(start, (0.,)*7, (0.,)*7)
+        path = JointTrajectory(JOINTS, (TrajectoryPoint(0., still), TrajectoryPoint(1., still)), "rammp_curobo:test")
+        guard = PullGuard(None, stiffness=backend.pull_impedance["kq"], force_limit_n=25., jacobian=backend._tool_jacobian)
+        wrapped = (0., .262, 3.1414, -2.269, 0., .96, 1.571)                  # the same pose, reported the other side of pi
+        live = {"position_rad": start, "knuckle_rad": None, "effort_nm": None}
+        guard.on_progress(0.)
+        self.assertIsNone(guard.check(live=live, trajectory=path, elapsed_s=0., now=0.))
+        self.assertIsNone(guard.check(live={**live, "position_rad": wrapped}, trajectory=path, elapsed_s=.5, now=0.))
+        self.assertLess(guard.peak_force_n, 1.)
 
     def test_out_of_reach_the_part_swivels_evenly_between_the_pads(self):
         # The wrist cannot turn more than 0.3 rad from where it holds the pull; the pull runs along the hinge.
