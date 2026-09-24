@@ -418,3 +418,5 @@ The deployment manifest's update of 2026-09-23 removed the adl node, which only 
 
 Correction to 2026-09-23: the motion-session test that rejected two worker experiments was not broken by them. It fails intermittently in the full suite on a loaded Jetson (`insufficient_committed_prefix`, a replan a few tens of milliseconds late), and passes in isolation and in 130 further harness runs.
 
+The rolling-session tests in `test_motion_session.py` tick every 2 ms against 80-180 ms budgets. With the camera and detector containers running (load average near 12 on 12 cores) the event loop stalls long enough for those sessions to stop safely on their own timing guards (`insufficient_committed_prefix`, `planner_deadline`), which failed the suite intermittently and rejected Onyx experiments that had nothing to do with them. Retrying and widening one test's budget did not hold, so the class now runs only on an idle machine or with `RAMMP_REALTIME_TESTS=1`; it passes that way. The module is not on the robot's live path.
+
