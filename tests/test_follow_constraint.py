@@ -123,6 +123,30 @@ class FollowConstraintTests(unittest.TestCase):
         for position, _ in client.targets:
             self.assertAlmostEqual(np.linalg.norm(np.asarray(position)[:2]-pivot[:2]), radius, places=9)
 
+    def test_a_step_out_of_reach_lets_the_part_swivel_between_the_pads(self):
+        # The wrist cannot turn with the door past 0.3 rad here; a pull parallel to the hinge can swivel in the grasp.
+        from rammp_adl.motion.kinematics import quaternion_matrix
+        client = TrackingClient(knuckle=.45)
+        backend, world = self.backend(client)
+        start_rotation = quaternion_matrix(backend._tool_pose(client.joints)[1])
+        plan = client.plan_to_pose
+
+        async def reach_limited(position_m, quaternion_xyzw, **kwargs):
+            turn = np.arccos(np.clip((np.trace(start_rotation.T @ quaternion_matrix(tuple(quaternion_xyzw)))-1.)/2., -1., 1.))
+            if turn > .3+1e-6:
+                raise SheppyClientError("planner refused: MotionGenStatus.IK_FAIL: no collision-free joint solution AT the goal")
+            return await plan(position_m, quaternion_xyzw, **kwargs)
+        client.plan_to_pose = reach_limited
+        outcome = self.follow(backend, world, .6)
+        self.assertEqual(outcome.status, "succeeded")
+        steps = outcome.evidence[0]["data"]["steps"]
+        self.assertEqual(steps[0]["swivel"], 0.)
+        self.assertEqual(steps[-1]["swivel"], .5)
+        self.assertEqual(outcome.evidence[0]["data"]["achieved"], .6)
+        pivot = np.asarray(self.record["pivot_base"])
+        radii = {round(float(np.linalg.norm(np.asarray(p)[:2]-pivot[:2])), 9) for p, _ in client.targets}
+        self.assertEqual(len(radii), 1)                                                    # the hand still follows the arc
+
     def test_a_contact_trip_is_a_model_mismatch_with_the_achieved_value_recorded(self):
         client = TrackingClient(knuckle=.45)
         client.trip_after = 2

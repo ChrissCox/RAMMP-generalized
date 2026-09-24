@@ -428,3 +428,5 @@ Two more causes of misses were found in the recorded frames. Model alignment mov
 
 Runs today: approach tripped the guard (35), approach reached the pull but a still-window race latched a fault (17.5), reached the pull and closed on air twice (50), closed on air four times with the bundle's reach (50).
 
+Run 5, with the measured fingertip reach and the grasp placed from the close view, **grasped the pull and opened the door to 55 degrees** (0.96 rad) in eleven guarded five-degree steps at 3.1-3.7 Nm peak effort (score 83.3): the first grasp and the first door motion on the robot. The next step had no joint solution with the wrist turning rigidly with the door. Plan-only from that grasp, every step to 90 degrees is reachable if the wrist turns only half the door angle (to 80 degrees) or none of it (to 90): a pull parallel to the hinge swivels between the pads. `follow_constraint` now retries an out-of-reach step with the part swivelling (half, then all), only when the fingers close across a part parallel to the hinge, keeps the swivel for the remaining steps and records it per step; the effort guard still stops a grasp that binds. Not yet run on the robot.
+

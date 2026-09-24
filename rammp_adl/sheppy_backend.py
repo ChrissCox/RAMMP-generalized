@@ -918,6 +918,21 @@ class SheppyArmBackend:
             raise BackendFailure("stale_state", "no fresh joint state to place the tool")
         position, orientation = self._tool_pose(live["position_rad"])
         plan = waypoints(record, position, orientation, target)
+        import numpy as np
+        from .constraints import rotation_about
+        from .motion.kinematics import quaternion_matrix, quaternion_xyzw_from_matrix
+        axis = np.asarray(record["axis_base"], dtype=float)/np.linalg.norm(record["axis_base"])
+        # Pads closed across a part that runs along the hinge (a vertical pull on a vertical hinge) let the
+        # part swivel between them, so the wrist need not turn the whole door angle: that is the reach a
+        # step out of reach gets back. The effort guard still stops a grasp that binds.
+        can_swivel = record["kind"] == "revolute" and abs(float(quaternion_matrix(tuple(orientation))[:, 0] @ axis)) < .3
+        swivel = 0.
+
+        def swivelled(step_orientation, value, fraction):
+            if fraction == 0.:
+                return step_orientation
+            back = rotation_about(axis, -float(record["direction"])*value*fraction)
+            return tuple(float(v) for v in quaternion_xyzw_from_matrix(back @ quaternion_matrix(tuple(step_orientation))))
         await self._own("follow_constraint", context)
         achieved, peak, trip_info, status, detail, steps = 0., 0., None, "succeeded", "", []
         measured, frames, initial_normal, verified, scores = [], [], None, None, {}
@@ -937,12 +952,24 @@ class SheppyArmBackend:
                 if not await self.client.stationary(duration_s=self.stationary_duration_s):
                     status, detail = "stale_state", "the arm is not verifiably still before the next step"
                     raise BackendFailure("stale_state", detail)
-                try:
-                    trajectory, planning = await self.client.plan_to_pose(step_position, step_orientation,
-                                                                          cancel_event=context.cancel_event)
-                except SheppyClientError as exc:
-                    status, detail = "planning_failed", str(exc)
-                    raise BackendFailure("planning_failed", f"step to {value:.3f} {record['unit']}: {exc}") from exc
+                trajectory, refusal = None, None
+                for fraction in [swivel]+[f for f in (.5, 1.) if can_swivel and f > swivel]:
+                    try:
+                        trajectory, planning = await self.client.plan_to_pose(step_position, swivelled(step_orientation, value, fraction),
+                                                                              cancel_event=context.cancel_event)
+                    except SheppyClientError as exc:
+                        refusal = exc
+                        if "IK_FAIL" not in str(exc):
+                            break                           # only reach is worth another wrist; anything else stands
+                        continue
+                    if fraction != swivel:
+                        self.log(f"follow {constraint_id}: {value:.3f} {record['unit']} out of reach with the wrist turning "
+                                 f"{(1-swivel)*100:.0f}% of the door; the part swivels in the grasp, wrist at {(1-fraction)*100:.0f}%")
+                        swivel = fraction
+                    break
+                if trajectory is None:
+                    status, detail = "planning_failed", str(refusal)
+                    raise BackendFailure("planning_failed", f"step to {value:.3f} {record['unit']}: {refusal}") from refusal
                 trajectory = self._scaled(trajectory, "contact")
                 guard = self._guard(touch_nm=float(record["contact_effort_nm"]), tool_exclusion_m=self.tool_exclusion_m)
                 await context.feedback(event="constraint_step", skill="follow_constraint", value=value,
@@ -954,7 +981,7 @@ class SheppyArmBackend:
                 if receipt["status"] != "succeeded" and getattr(self.client, "settle", None) is not None:
                     await self.client.settle(timeout_s=3.)     # report the stop from a still arm
                 steps.append({"value": value, "status": receipt["status"], "planning": planning,
-                              "trajectory_digest": trajectory.digest})
+                              "trajectory_digest": trajectory.digest, "swivel": swivel})
                 self.log(f"follow {constraint_id}: {value:.3f}/{target:.3f} {record['unit']} {receipt['status']} "
                          f"peak {peak:.1f} Nm")
                 if receipt["status"] == "cancelled":
