@@ -9,15 +9,18 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
+
 from rammp_adl.app import sheppy_runtime
 from rammp_adl.constraints import ConstraintStore, context_constraint
 from rammp_adl.intake import draft_context, seed_articulation, seed_visibility
 from rammp_adl.motion.collision_guard import EffortGuard, GuardSet
 from rammp_adl.motion.kinematics import UrdfChain
+from rammp_adl.motion.sheppy_client import JOINT_VMAX
 from rammp_adl.sheppy_backend import bootstrap_robot_facts
 from rammp_adl.world import MetricPose
 
-from test_follow_constraint import TrackingClient, door_record
+from test_follow_constraint import HINGE, ArcClient, door_record
 
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLE = ROOT/"artifacts/jetson/real-world-ready/assembly/bundle-2"
@@ -47,8 +50,8 @@ class DoorPlanExecutionTests(unittest.TestCase):
         self.chain = UrdfChain.from_path(BUNDLE/"arm-gripper-locked.urdf")
         self.folder = tempfile.TemporaryDirectory()
         self.store = ConstraintStore(self.folder.name)
-        self.record = door_record()
-        self.client = TrackingClient(knuckle=.01)
+        self.record = {**door_record(), **HINGE}
+        self.client = ArcClient(self.chain, knuckle=.01, solve_live=False)       # the approach arrives where run 5 held the pull
         # The gripper closes onto the handle and stalls short of closed; opening reaches its target.
         self.client.gripper_script = lambda k: ({"ok": True, "knuckle_rad": .45, "stalled": True, "sent": True, "message": "stalled"}
                                                 if k > .7 else {"ok": True, "knuckle_rad": k, "stalled": False, "sent": True, "message": "at target"})
@@ -123,10 +126,14 @@ class DoorPlanExecutionTests(unittest.TestCase):
         self.assertEqual(facts.fact("released", {"entity_id": "handle_1", "support_id": "cabinet_door_surface"}), "true")
         self.assertEqual(facts.fact("gripper_empty", {"robot_id": "robot"}), "true")
         self.assertNotEqual(facts.fact("holding", {"entity_id": "handle_1"}), "true")
-        # Transits slowed; the last centimetres into the grasp and every constraint step slowed more.
+        # Transits slowed; the last centimetres into the grasp slowed more; the door pulled in one pass inside the contact share.
         provenance = [t.provenance for t in self.client.sent]
+        self.assertEqual(len(provenance), 4)
         self.assertTrue(provenance[0].endswith("x2.5") and provenance[-1].endswith("x2.5"))
-        self.assertTrue(all(p.endswith("x4") for p in provenance[1:-1]) and len(provenance) > 4)
+        self.assertTrue(provenance[1].endswith("x4"))
+        self.assertIn("splined and re-timed", provenance[2])
+        velocities = np.abs([p.state.velocity for p in self.client.sent[2].points])
+        self.assertTrue((velocities <= np.asarray(JOINT_VMAX)/4.*(1+1e-9)).all())
         self.assertEqual(self.store.load("cabinet door")["attempts"][-1]["status"], "succeeded")
 
     def test_without_confirmation_nothing_moves(self):

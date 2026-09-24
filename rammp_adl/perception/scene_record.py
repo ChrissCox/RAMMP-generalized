@@ -76,6 +76,28 @@ def save_scene(root, keyframe, *, source, task_text="", extra=None):
         return None
 
 
+class RuntimeRecorder:
+    """The node's scene recorder: every keyframe while the arm moves between them, one every idle_s while it rests.
+
+    The scene keeps choosing keyframes with the arm parked; saved each time, a few minutes
+    at home would push a whole run's scenes out of the KEEP_SCENES window.
+    """
+
+    def __init__(self, root, *, idle_s=300., moved_rad=2e-3, clock=time.monotonic):
+        self.root, self.idle_s, self.moved_rad, self.clock = root, float(idle_s), float(moved_rad), clock
+        self.last_joints, self.last_at = None, None
+
+    def __call__(self, keyframe):
+        joints, now = [float(v) for v in keyframe.joints_rad], self.clock()
+        if (self.last_joints is not None and len(joints) == len(self.last_joints) and now-self.last_at < self.idle_s
+                and max(abs(a-b) for a, b in zip(joints, self.last_joints)) < self.moved_rad):
+            return None
+        path = save_scene(self.root, keyframe, source="runtime")
+        if path is not None:
+            self.last_joints, self.last_at = joints, now
+        return path
+
+
 def load_scene(path):
     """(Keyframe, meta) for a recorded scene; the keyframe is stamped as captured now, for replay."""
     path = Path(path)

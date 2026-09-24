@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from rammp_adl.perception.scene_record import list_scenes, load_scene, save_guard_trip, save_scene
+from rammp_adl.perception.scene_record import RuntimeRecorder, list_scenes, load_scene, save_guard_trip, save_scene
 from synthetic_bench import HANDLE_CENTRE, SyntheticAstra, keyframe, record
 from synthetic_scene import looking_at
 from test_grounded_scene import NoFace
@@ -21,6 +21,20 @@ spec.loader.exec_module(offline)
 
 
 class RecordTests(unittest.TestCase):
+    def test_the_runtime_keeps_every_scene_while_the_arm_moves_and_one_in_a_while_at_rest(self):
+        import dataclasses
+        with tempfile.TemporaryDirectory() as folder:
+            now = [0.]
+            recorder = RuntimeRecorder(folder, idle_s=300., clock=lambda: now[0])
+            parked = keyframe(0, looking_at([.1, .1, .35], [.6, .1, .3]))
+            moved = dataclasses.replace(parked, joints_rad=tuple(v+.01 for v in parked.joints_rad))
+            saved = []
+            for time_s, frame in ((0., parked), (3., parked), (6., parked), (9., moved), (12., moved), (320., moved)):
+                now[0] = time_s
+                saved.append(recorder(frame) is not None)
+            self.assertEqual(saved, [True, False, False, True, False, True])
+            self.assertEqual(len(list_scenes(folder)), 3)
+
     def test_a_scene_round_trips_with_depth_in_millimetres(self):
         with tempfile.TemporaryDirectory() as folder:
             original = keyframe(0, looking_at([.1, .1, .35], [.6, .1, .3]))

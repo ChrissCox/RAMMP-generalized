@@ -11,8 +11,10 @@ static trajectory: there is no rolling replanning and no continuous handoff;
 the live collision guard is the wrist depth stream when one is wired. Aperture
 is mapped through a nominal 2F-85 relation until a measured table replaces it.
 follow_constraint follows an installed metric constraint record as a sequence
-of cuRobo plans from rest, each executed under the effort budget the record
-carries; that is stop-and-go, not a constrained planner. Release is supported
+of cuRobo plans from rest made in advance, one per waypoint and each from the
+previous one's end, flown as one trajectory through the planner's solutions
+(motion/constraint_path.py) under the effort budget the record carries; the
+planner itself plans no constrained path. Release is supported
 only for parts the constraint record says are attached to their support.
 Which of those the operator declares as capabilities is an explicit runtime
 input, never a default.
@@ -30,7 +32,7 @@ from .contracts import ContractError, SkillRegistry, checked_copy, digest, valid
 from .handlers import (BackendFailure, FollowConstraintHandler, GraspHandler, MoveToPoseHandler,
                        ObserveHandler, ReleaseHandler, SetGripperHandler, SkillOutcome)
 from .hardware_backend import HardwareObservationBackend
-from .motion.sheppy_client import (JOINTS, KNUCKLE_CLOSED_RAD, TOOL_FRAME_FROM_FLANGE_M, SheppyClientError,
+from .motion.sheppy_client import (JOINT_VMAX, JOINTS, KNUCKLE_CLOSED_RAD, TOOL_FRAME_FROM_FLANGE_M, SheppyClientError,
                                    reversed_trajectory, scale_trajectory_time)
 from .validation import GeometryCheck
 
@@ -51,7 +53,8 @@ KNOWN_GAPS = {
     "calibrated_aperture": "aperture is a nominal 2F-85 relation, not a measured table",
     "calibrated_grasp": "grasp success is a knuckle stall, not a calibrated grip model",
     "support_detection": "no sensor establishes that a released object is supported",
-    "curobo_constrained_path": "constraints are followed as cuRobo plans from rest between waypoints, not a constrained path",
+    "curobo_constrained_path": ("constraints are followed through cuRobo's solutions at waypoints, planned from rest in "
+                                "advance and splined; the path between waypoints is checked, not planned"),
     "contact_monitor": "no effort guard is wired; contact is not monitored",
 }
 
@@ -890,17 +893,72 @@ class SheppyArmBackend:
         finally:
             self._release("release")
 
-    async def follow_constraint(self, args, context):
-        """Follow an installed constraint record as guarded cuRobo waypoints.
+    #: A pulled part's own pace, by unit: rate and acceleration of the door angle or drawer travel.
+    #: Every joint also stays under its contact share of the URDF limit, and that is usually what binds.
+    constraint_pace = {"rad": (.3, .6), "m": (.06, .15)}
+    #: How far the flown path may leave the constraint anywhere between the planner's waypoints.
+    constraint_tolerance_m, constraint_tolerance_deg = .004, 2.
+    #: Wrist lags tried, least first, when the wrist cannot turn all the way with a part that may swivel in the grasp.
+    swivel_lags = (.25, .5, .75, 1.)
 
-        Each waypoint is one plan from rest and one execution under the
-        record's effort budget, with the tool's own neighbourhood excluded
-        from the depth guard because it holds the part. Success is the tool
-        having traced the arc with the grip retained; the part's own angle is
-        not observed, and the outcome says so. Every attempt is recorded.
+    async def _plan_constraint(self, record, start, position, orientation, target, context, *, can_swivel):
+        """The planner's solutions along the constraint, each planned from the last one, plan-only; nothing moves.
+
+        The wrist turns with the part (lag 0) when the planner reaches the target that way. When it
+        cannot and the part may swivel in the grasp, the least wrist lag whose target the planner
+        reaches is used for the whole pass, so the part turns between the pads evenly, not all at once.
+        A waypoint the planner refuses ends the chain; what was planned before it is still one pass.
         """
-        from .constraints import (PROGRESS_RUBRIC, progress_score, record_attempt, save_demonstration, turn_between,
-                                  waypoints)
+        from .constraints import waypoints
+        lags = [0.]+[lag for lag in self.swivel_lags if can_swivel]
+        chosen = lags[-1]
+        for lag in lags[:-1]:
+            _, goal_position, goal_orientation = waypoints(record, position, orientation, target, lag=lag)[-1]
+            try:
+                await self.client.plan_to_pose(goal_position, goal_orientation, start_joints=start,
+                                               cancel_event=context.cancel_event)
+            except SheppyClientError as exc:
+                if "IK_FAIL" in str(exc):
+                    continue                                # out of reach with this much wrist
+            chosen = lag
+            break
+        best = None
+        for lag in [lag for lag in lags if lag >= chosen]:
+            values, knots, steps, refusal = [0.], [tuple(start)], [], None
+            for value, goal_position, goal_orientation in waypoints(record, position, orientation, target, lag=lag):
+                if context.cancel_event.is_set():
+                    raise BackendFailure("cancelled", "execution epoch was revoked")
+                try:
+                    trajectory, planning = await self.client.plan_to_pose(goal_position, goal_orientation, start_joints=knots[-1],
+                                                                          cancel_event=context.cancel_event)
+                except SheppyClientError as exc:
+                    refusal = exc
+                    break
+                values.append(value)
+                knots.append(tuple(float(v) for v in trajectory.points[-1].state.position))
+                steps.append({"value": value, "planning": planning, "trajectory_digest": trajectory.digest, "swivel": lag})
+            if best is None or values[-1] > best["values"][-1]:
+                best = {"values": values, "knots": knots, "steps": steps, "lag": lag, "refusal": refusal}
+            if refusal is None or "IK_FAIL" not in str(refusal):
+                break                                       # reached, or refused for a reason more wrist cannot fix
+        return best
+
+    async def follow_constraint(self, args, context):
+        """Follow an installed constraint record as one guarded pull through cuRobo's waypoint solutions.
+
+        The planner plans from rest only, so every waypoint is planned first, each from the
+        previous one's joints, plan-only, while the arm holds the part still. The solutions are
+        flown as one trajectory (motion/constraint_path.py), checked against the constraint with
+        the kinematic model before it is sent. The record's effort budget guards it, re-baselined
+        at every waypoint as each step from rest used to be; the tool's own neighbourhood is
+        excluded from the depth guard because it holds the part, and a grip closing past the grasp
+        stops it. Success is the tool having traced the arc with the grip retained; the wrist
+        camera's surface normal checks the part's own turn once at the end when a plane is seen.
+        Every attempt is recorded.
+        """
+        from .constraints import (PROGRESS_RUBRIC, constraint_pose, progress_score, record_attempt, save_demonstration,
+                                  turn_between)
+        from .motion.constraint_path import PathError, constraint_trajectory, deviation
         validate_schema(args, self.catalog.skills["follow_constraint"]["arguments"], "follow_constraint args")
         profile = self._profile(args["profile_id"], safety_class="contact")
         self._snapshot(context)
@@ -912,114 +970,132 @@ class SheppyArmBackend:
             raise BackendFailure("stale_state", f"no metric constraint record is installed for {constraint_id}")
         if args["target_unit"] != record["unit"]:
             raise BackendFailure("model_mismatch", "target unit differs from the constraint record")
-        target = float(args["target_value"])
+        target, unit = float(args["target_value"]), record["unit"]
         live = self.client.live_joints()
         if live is None:
             raise BackendFailure("stale_state", "no fresh joint state to place the tool")
-        position, orientation = self._tool_pose(live["position_rad"])
-        plan = waypoints(record, position, orientation, target)
+        knuckle = live["knuckle_rad"]
+        if knuckle is not None and self.grasp_knuckle is not None and knuckle > self.grasp_knuckle+self.grasp_stall_margin_rad:
+            raise BackendFailure("slip", "the gripper closed further than at grasp; the part slipped out")
+        if not await self.client.stationary(duration_s=self.stationary_duration_s):
+            raise BackendFailure("stale_state", "the arm is not verifiably still before planning the pull")
+        live = self.client.live_joints()
+        if live is None:
+            raise BackendFailure("stale_state", "no fresh joint state to plan the pull from")
+        start = tuple(float(v) for v in live["position_rad"])
+        position, orientation = self._tool_pose(start)
         import numpy as np
-        from .constraints import rotation_about
-        from .motion.kinematics import quaternion_matrix, quaternion_xyzw_from_matrix
+        from .motion.kinematics import quaternion_matrix
         axis = np.asarray(record["axis_base"], dtype=float)/np.linalg.norm(record["axis_base"])
         # Pads closed across a part that runs along the hinge (a vertical pull on a vertical hinge) let the
         # part swivel between them, so the wrist need not turn the whole door angle: that is the reach a
-        # step out of reach gets back. The effort guard still stops a grasp that binds.
+        # target out of reach gets back. The effort guard still stops a grasp that binds.
         can_swivel = record["kind"] == "revolute" and abs(float(quaternion_matrix(tuple(orientation))[:, 0] @ axis)) < .3
-        swivel = 0.
-
-        def swivelled(step_orientation, value, fraction):
-            if fraction == 0.:
-                return step_orientation
-            back = rotation_about(axis, -float(record["direction"])*value*fraction)
-            return tuple(float(v) for v in quaternion_xyzw_from_matrix(back @ quaternion_matrix(tuple(step_orientation))))
         await self._own("follow_constraint", context)
         achieved, peak, trip_info, status, detail, steps = 0., 0., None, "succeeded", "", []
         measured, frames, initial_normal, verified, scores = [], [], None, None, {}
         scene = self.scene
-        if scene is not None:
-            initial_normal, keyframe0 = await scene.surface_normal()
-            if keyframe0 is not None:
-                try:
-                    frames.append(await asyncio.to_thread(scene.crop_for, keyframe0))
-                except Exception:                            # noqa: BLE001 - a demo frame is optional
-                    pass
         try:
-            for value, step_position, step_orientation in plan:
-                if context.cancel_event.is_set():
-                    status, detail = "cancelled", "execution epoch was revoked"
-                    raise BackendFailure("cancelled", detail)
-                if not await self.client.stationary(duration_s=self.stationary_duration_s):
-                    status, detail = "stale_state", "the arm is not verifiably still before the next step"
-                    raise BackendFailure("stale_state", detail)
-                trajectory, refusal = None, None
-                for fraction in [swivel]+[f for f in (.5, 1.) if can_swivel and f > swivel]:
-                    try:
-                        trajectory, planning = await self.client.plan_to_pose(step_position, swivelled(step_orientation, value, fraction),
-                                                                              cancel_event=context.cancel_event)
-                    except SheppyClientError as exc:
-                        refusal = exc
-                        if "IK_FAIL" not in str(exc):
-                            break                           # only reach is worth another wrist; anything else stands
-                        continue
-                    if fraction != swivel:
-                        self.log(f"follow {constraint_id}: {value:.3f} {record['unit']} out of reach with the wrist turning "
-                                 f"{(1-swivel)*100:.0f}% of the door; the part swivels in the grasp, wrist at {(1-fraction)*100:.0f}%")
-                        swivel = fraction
-                    break
-                if trajectory is None:
-                    status, detail = "planning_failed", str(refusal)
-                    raise BackendFailure("planning_failed", f"step to {value:.3f} {record['unit']}: {refusal}") from refusal
-                trajectory = self._scaled(trajectory, "contact")
-                guard = self._guard(touch_nm=float(record["contact_effort_nm"]), tool_exclusion_m=self.tool_exclusion_m)
-                await context.feedback(event="constraint_step", skill="follow_constraint", value=value,
-                                       unit=record["unit"], duration_s=trajectory.duration_s)
-                receipt = await self.client.execute(trajectory, cancel_event=context.cancel_event, guard=guard)
-                effort = getattr(guard, "effort", None)
-                if effort is not None:
-                    peak = max(peak, float(getattr(effort, "peak_nm", 0.)))
-                if receipt["status"] != "succeeded" and getattr(self.client, "settle", None) is not None:
-                    await self.client.settle(timeout_s=3.)     # report the stop from a still arm
-                steps.append({"value": value, "status": receipt["status"], "planning": planning,
-                              "trajectory_digest": trajectory.digest, "swivel": swivel})
-                self.log(f"follow {constraint_id}: {value:.3f}/{target:.3f} {record['unit']} {receipt['status']} "
-                         f"peak {peak:.1f} Nm")
-                if receipt["status"] == "cancelled":
-                    status, detail = "cancelled", receipt["message"]
-                    raise BackendFailure("cancelled", detail)
-                if receipt["status"] == "guard_trip":
-                    trip_info = receipt.get("trip") or {}
-                    status, detail = "tripped", receipt["message"]
-                    kind = trip_info.get("kind")
-                    code = "model_mismatch" if kind == "contact" else "stale_state" if kind == "collision" else "safety_fault"
-                    raise BackendFailure(code, f"stopped at {achieved:.3f} of {target:.3f} {record['unit']}: {receipt['message']}",
-                                         evidence=[{"evidence_id": f"guard-{uuid.uuid4().hex}", "source": self.mode,
-                                                    "predicates": [], "ttl_s": 30.,
-                                                    "data": {"trip": checked_copy(trip_info), "receipt": checked_copy(receipt),
-                                                             "achieved": achieved, "constraint": constraint_id}}])
-                if receipt["status"] != "succeeded":
-                    status, detail = "failed", receipt["message"]
-                    raise BackendFailure("safety_fault" if receipt["status"] in ("goal_not_reached", "timeout") else "planning_failed",
-                                         detail)
-                achieved = value
-                live = self.client.live_joints()
-                knuckle = None if live is None else live["knuckle_rad"]
-                if (knuckle is not None and self.grasp_knuckle is not None
-                        and knuckle > self.grasp_knuckle+self.grasp_stall_margin_rad):
-                    status, detail = "slipped", "the gripper closed further than at grasp; the part slipped out"
-                    raise BackendFailure("slip", detail)
-                if scene is not None and record["kind"] == "revolute" and initial_normal is not None:
+            async def first_look():
+                try:
                     normal, keyframe = await scene.surface_normal()
-                    turned = None if normal is None else turn_between(initial_normal, normal, record["axis_base"])
-                    measured.append({"value": value, "turned_rad": turned, "keyframe": None if keyframe is None else keyframe.capture_id})
-                    if keyframe is not None and (len(frames) < 2 or value >= target-1e-9):
-                        try:
-                            frames.append(await asyncio.to_thread(scene.crop_for, keyframe))
-                        except Exception:                    # noqa: BLE001 - a demo frame is optional
-                            pass
+                except Exception:                            # noqa: BLE001 - no plane seen: the turn goes unverified
+                    return None
+                if keyframe is not None:
+                    try:
+                        frames.append(await asyncio.to_thread(scene.crop_for, keyframe))
+                    except Exception:                        # noqa: BLE001 - a demo frame is optional
+                        pass
+                return normal
+            # The camera waits on a still keyframe of the part while the planner plans the pull.
+            looking = asyncio.ensure_future(first_look()) if scene is not None else None
+            began = time.monotonic()
+            try:
+                chain = await self._plan_constraint(record, start, position, orientation, target, context, can_swivel=can_swivel)
+            finally:
+                if looking is not None:
+                    initial_normal = await looking
+            planned_s = time.monotonic()-began
+            values, knots, lag, refusal, steps = chain["values"], chain["knots"], chain["lag"], chain["refusal"], chain["steps"]
+            if len(values) < 2:
+                status, detail = "planning_failed", str(refusal)
+                raise BackendFailure("planning_failed", f"step to {min(target, float(record['step'])):.3f} {unit}: {refusal}") from refusal
+            rate, acceleration = self.constraint_pace[unit]
+            scale = self.speed_scales.get("contact", 1.)
+            try:
+                trajectory, timing, spline = constraint_trajectory(
+                    values, knots, rate_limits=[limit/scale for limit in JOINT_VMAX], value_rate=rate, value_accel=acceleration,
+                    provenance=f"rammp_curobo:{len(values)-1} waypoint solutions along {constraint_id}, splined and re-timed")
+            except PathError as exc:
+                status, detail = "planning_failed", str(exc)
+                raise BackendFailure("planning_failed", detail) from exc
+
+            def tool_pose(joints):
+                tool_position, tool_orientation = self._tool_pose(tuple(joints))
+                return tool_position, quaternion_matrix(tool_orientation)
+            off = deviation(spline, values[-1], tool_pose, lambda value: constraint_pose(record, position, orientation, value, lag=lag))
+            if off["distance_m"] > self.constraint_tolerance_m or math.degrees(off["turn_rad"]) > self.constraint_tolerance_deg:
+                status = "planning_failed"
+                detail = (f"between the planner's waypoints the pull leaves the {record['label']}'s path by {off['distance_m']*1000:.1f} mm "
+                          f"and {math.degrees(off['turn_rad']):.1f} deg (at {off['distance_at']:.3f} {unit}); nothing was sent")
+                raise BackendFailure("planning_failed", detail)
+            guard = PullGuard(self._guard(touch_nm=float(record["contact_effort_nm"]), tool_exclusion_m=self.tool_exclusion_m),
+                              renew_at_s=[timing.time_at(value) for value in values[1:-1]],
+                              grasp_knuckle=self.grasp_knuckle, slip_margin_rad=self.grasp_stall_margin_rad)
+            await context.feedback(event="constraint_motion", skill="follow_constraint", value=values[-1], unit=unit,
+                                   waypoints=len(values)-1, duration_s=trajectory.duration_s)
+            self.log(f"follow {constraint_id}: {len(values)-1} waypoints to {values[-1]:.3f} {unit} planned in {planned_s:.1f} s"
+                     f"{f' with the wrist lagging {lag:.0%} of the turn' if lag else ''}; one {trajectory.duration_s:.1f} s pull, "
+                     f"within {off['distance_m']*1000:.1f} mm of the path")
+            self.last_trajectory = None                     # the way in to the part is no way out once it has moved
+            receipt = await self.client.execute(trajectory, cancel_event=context.cancel_event, guard=guard)
+            peak = guard.peak_nm
+            if receipt["status"] != "succeeded" and getattr(self.client, "settle", None) is not None:
+                await self.client.settle(timeout_s=3.)         # report the stop from a still arm
+            achieved = values[-1] if receipt["status"] == "succeeded" else (
+                timing.value_at(float(receipt.get("progress") or 0.)*trajectory.duration_s) if receipt.get("sent") else 0.)
+            for step in steps:
+                step["status"] = receipt["status"] if step["value"] <= achieved+1e-9 else "not_reached"
+            self.log(f"follow {constraint_id}: {achieved:.3f}/{target:.3f} {unit} {receipt['status']} peak {peak:.1f} Nm")
+            if receipt["status"] == "cancelled":
+                status, detail = "cancelled", receipt["message"]
+                raise BackendFailure("cancelled", detail)
+            if receipt["status"] == "guard_trip":
+                trip_info = receipt.get("trip") or {}
+                kind = trip_info.get("kind")
+                if kind == "slip":
+                    status, detail = "slipped", "the gripper closed further than at grasp during the pull; the part slipped out"
+                    raise BackendFailure("slip", detail)
+                status, detail = "tripped", receipt["message"]
+                code = "model_mismatch" if kind == "contact" else "stale_state" if kind == "collision" else "safety_fault"
+                raise BackendFailure(code, f"stopped at {achieved:.3f} of {target:.3f} {unit}: {receipt['message']}",
+                                     evidence=[{"evidence_id": f"guard-{uuid.uuid4().hex}", "source": self.mode,
+                                                "predicates": [], "ttl_s": 30.,
+                                                "data": {"trip": checked_copy(trip_info), "receipt": checked_copy(receipt),
+                                                         "achieved": achieved, "constraint": constraint_id}}])
+            if receipt["status"] != "succeeded":
+                status, detail = "failed", receipt["message"]
+                raise BackendFailure("safety_fault" if receipt["status"] in ("goal_not_reached", "timeout") else "planning_failed",
+                                     detail)
+            live = self.client.live_joints()
+            knuckle = None if live is None else live["knuckle_rad"]
+            if (knuckle is not None and self.grasp_knuckle is not None
+                    and knuckle > self.grasp_knuckle+self.grasp_stall_margin_rad):
+                status, detail = "slipped", "the gripper closed further than at grasp; the part slipped out"
+                raise BackendFailure("slip", detail)
+            if refusal is not None:
+                status, detail = "planning_failed", str(refusal)
+                raise BackendFailure("planning_failed", f"pulled to {achieved:.3f} {unit}; the next waypoint: {refusal}") from refusal
+            if scene is not None and record["kind"] == "revolute" and initial_normal is not None:
+                normal, keyframe = await scene.surface_normal()
+                turned = None if normal is None else turn_between(initial_normal, normal, record["axis_base"])
+                measured.append({"value": achieved, "turned_rad": turned, "keyframe": None if keyframe is None else keyframe.capture_id})
+                if keyframe is not None:
+                    try:
+                        frames.append(await asyncio.to_thread(scene.crop_for, keyframe))
+                    except Exception:                        # noqa: BLE001 - a demo frame is optional
+                        pass
             # Local verification: the door face must have turned as far as the tool did.
-            # A waypoint where no plane was seen says nothing; the last one that was
-            # seen is compared with its own waypoint, and verifies the goal only if it is the final one.
             seen = [m for m in measured if m["turned_rad"] is not None]
             if seen:
                 last = seen[-1]
@@ -1028,7 +1104,7 @@ class SheppyArmBackend:
                     status, detail = "unverified", (f"the surface turned {last['turned_rad']:.2f} rad while the tool moved "
                                                     f"{last['value']:.2f} rad")
                     raise BackendFailure("goal_unobserved", detail)
-                verified = True if last["value"] >= achieved-1e-9 else None
+                verified = True
             scores["local"] = progress_score(achieved=achieved, target=target, grasped=True, verified=verified)
             reasoner = getattr(scene, "reasoner", None)
             if reasoner is not None and frames:
@@ -1036,7 +1112,7 @@ class SheppyArmBackend:
                     judged = await reasoner.verify_progress(
                         self._snapshot(context).context, task_text=f"{record['opening']} the {record['label']}",
                         rubric=PROGRESS_RUBRIC, images=[frames[-1]],
-                        question=f"The tool moved {achieved:.2f} {record['unit']} of {target:.2f}. How far has the part moved?")
+                        question=f"The tool moved {achieved:.2f} {unit} of {target:.2f}. How far has the part moved?")
                     if judged.status == "OK" and judged.proposal is not None:
                         scores["model"] = judged.proposal["score"]
                         scores["model_observation"] = judged.detail[:200]
@@ -1053,12 +1129,20 @@ class SheppyArmBackend:
             return self._outcome(facts, data={
                 "constraint": {"constraint_id": constraint_id, "kind": record["kind"], "digest": record.get("digest"),
                                "parameters_version": record.get("parameters_version")},
-                "profile_id": profile["profile_id"], "target": target, "achieved": achieved, "unit": record["unit"],
-                "steps": steps, "peak_effort_nm": peak, "contact_effort_nm": record["contact_effort_nm"],
+                "profile_id": profile["profile_id"], "target": target, "achieved": achieved, "unit": unit,
+                "steps": steps, "pull": {"trajectory_digest": trajectory.digest, "duration_s": trajectory.duration_s,
+                                         "planned_s": round(planned_s, 3), "wrist_lag": lag,
+                                         "path_deviation_m": off["distance_m"], "path_turn_rad": off["turn_rad"]},
+                "peak_effort_nm": peak, "contact_effort_nm": record["contact_effort_nm"],
                 "measured": measured, "verified_locally": verified, "progress": scores,
                 "evidence_basis": ("tool traced the constraint path with the grip retained; the surface normal seen by the "
                                    "wrist camera turned with it" if verified else
                                    "tool traced the constraint path with the grip retained; the part's own displacement was not measured")})
+        except Exception as exc:
+            if status == "succeeded":                       # stopped somewhere no branch above named
+                status = "cancelled" if getattr(exc, "code", None) == "cancelled" else "failed"
+                detail = str(exc)
+            raise
         finally:
             self._release("follow_constraint")
             try:
@@ -1075,6 +1159,56 @@ class SheppyArmBackend:
                     self.constraint_store.save(record)
             except Exception as exc:                        # noqa: BLE001 - bookkeeping never masks the outcome
                 self.events.append({"event": "attempt_record_failed", "detail": str(exc), "at": time.monotonic()})
+
+
+class PullGuard:
+    """One pull's guard: the composed guard, its effort baseline moved along at every waypoint, and the grip.
+
+    Flown in steps from rest, a pull took a fresh effort baseline at each step. Flown as one
+    trajectory, the wrist's own gravity load changes by a few newton-metres over a door's swing
+    (the driver reports raw actuator torque), so the baseline moves to the present sample as the
+    pull passes each waypoint instead, unless the effort has already risen by half the budget
+    since the last one: then something is pushing back and the old baseline stands. A grip that
+    closes past the grasp by more than the stall margin stops the pull: the part slipped out.
+    """
+
+    def __init__(self, guard, *, renew_at_s=(), grasp_knuckle=None, slip_margin_rad=.05):
+        self.guard, self.effort = guard, getattr(guard, "effort", None)
+        self.depth_reader = getattr(guard, "depth_reader", None)
+        self.exclusions, self.tool_exclusion_m = getattr(guard, "exclusions", ()), getattr(guard, "tool_exclusion_m", 0.)
+        self.renew_at_s = sorted(float(t) for t in renew_at_s)
+        self.grasp_knuckle, self.slip_margin_rad = grasp_knuckle, float(slip_margin_rad)
+        self.renewals, self.held = 0, 0
+
+    @property
+    def peak_nm(self):
+        return 0. if self.effort is None else float(getattr(self.effort, "peak_nm", 0.))
+
+    def on_progress(self, progress):
+        if self.guard is not None:
+            self.guard.on_progress(progress)
+
+    def _renew(self, efforts):
+        effort = self.effort
+        if effort is None or efforts is None or effort.baseline is None:
+            return
+        present = [float(efforts[i]) for i in effort.joints]
+        if max(abs(a-b) for a, b in zip(present, effort.baseline)) < effort.touch_nm/2.:
+            effort.baseline = present
+            self.renewals += 1
+        else:
+            self.held += 1
+
+    def check(self, *, live, trajectory, elapsed_s, now):
+        while self.renew_at_s and elapsed_s >= self.renew_at_s[0]:
+            self.renew_at_s.pop(0)
+            self._renew(None if live is None else live.get("effort_nm"))
+        knuckle = None if live is None else live.get("knuckle_rad")
+        if knuckle is not None and self.grasp_knuckle is not None and knuckle > self.grasp_knuckle+self.slip_margin_rad:
+            return {"kind": "slip", "knuckle_rad": float(knuckle), "grasp_knuckle_rad": float(self.grasp_knuckle)}
+        if self.guard is None:
+            return None if live is not None else {"kind": "state_stale", "message": "no fresh joint state during motion"}
+        return self.guard.check(live=live, trajectory=trajectory, elapsed_s=elapsed_s, now=now)
 
 
 def _nearest_cluster(points, normal, target, *, cell_m=.01, reach_cells=2, seed_within_m=None):

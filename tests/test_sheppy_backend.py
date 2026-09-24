@@ -83,7 +83,7 @@ class FakeClient:
     async def stationary(self, **kwargs):
         return self.still
 
-    async def plan_to_pose(self, position_m, quaternion_xyzw, *, cancel_event=None, timeout_s=None):
+    async def plan_to_pose(self, position_m, quaternion_xyzw, *, cancel_event=None, timeout_s=None, start_joints=None):
         if self.plan_error:
             raise SheppyClientError(self.plan_error)
         end = tuple(q+.1 for q in self.joints)

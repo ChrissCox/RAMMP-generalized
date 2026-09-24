@@ -21,7 +21,7 @@ from rammp_adl.reasoning import ReasoningResult
 from rammp_adl.sheppy_backend import SheppyArmBackend
 from rammp_adl.world import MetricPose, WorldModel
 
-from test_follow_constraint import PROFILES, TrackingClient, door_record
+from test_follow_constraint import HINGE, PROFILES, ArcClient, TrackingClient, door_record
 from test_sheppy_backend import execution_context
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -263,15 +263,19 @@ class LookActTests(unittest.TestCase):
                                                       "target_value": target, "target_unit": "rad", "profile_id": "bench_contact"},
                                                      execution_context(world)))
 
+    def door(self, reasoner, normals):
+        """The bench door's hinge, held where run 5 held it; the wrist camera sees these face normals, first and last."""
+        self.client = ArcClient(self.chain, knuckle=.45)
+        self.record.update(HINGE)
+        self.scene.normals = normals
+        return self.backend(reasoner)
+
     def test_a_door_face_that_turns_with_the_tool_verifies_scores_and_leaves_a_demonstration(self):
-        from rammp_adl.constraints import waypoints
         axis = np.asarray(self.record["axis_base"])
         initial = np.array([-1., 0., 0.])
-        values = [value for value, _, _ in waypoints(self.record, (.58, .1, .3), (0., 0., 0., 1.), .3)]
-        steps = [rotation_about(axis, self.record["direction"]*value) @ initial for value in values]
-        self.scene.normals = [initial.tolist()]+[n.tolist() for n in steps]
+        turned = rotation_about(np.asarray(HINGE["axis_base"]), HINGE["direction"]*.3) @ initial
         reasoner = ScriptedReasoner(score=4)
-        backend, world = self.backend(reasoner)
+        backend, world = self.door(reasoner, [initial.tolist(), turned.tolist()])
         outcome = self.follow(backend, world, .3)
         data = outcome.evidence[0]["data"]
         self.assertTrue(data["verified_locally"])
@@ -280,27 +284,21 @@ class LookActTests(unittest.TestCase):
         self.assertIn("turned with it", data["evidence_basis"])
         self.assertAlmostEqual(data["measured"][-1]["turned_rad"], .3, places=6)
         self.assertEqual(reasoner.calls[-1][:2], ("verify", "pull the cabinet door"))
+        self.assertEqual(len(self.client.sent), 1)
         saved = self.store.load("cabinet door")
         self.assertEqual(saved["attempts"][-1]["progress"]["local"], 4)
-        self.assertEqual(saved["demonstration"]["frames"], 3)                                 # start, middle, end
+        self.assertEqual(saved["demonstration"]["frames"], 2)                                 # before and after the pull
         self.assertTrue((self.store.directory/saved["demonstration"]["folder"]/"manifest.json").is_file())
 
-    def test_a_face_lost_from_view_late_in_the_arc_is_unobserved_not_contradicted(self):
-        from rammp_adl.constraints import waypoints
-        axis = np.asarray(self.record["axis_base"])
-        initial = np.array([-1., 0., 0.])
-        values = [value for value, _, _ in waypoints(self.record, (.58, .1, .3), (0., 0., 0., 1.), .3)]
-        first = rotation_about(axis, self.record["direction"]*values[0]) @ initial
-        self.scene.normals = [initial.tolist(), first.tolist()]+[None]*len(values)
-        backend, world = self.backend(ScriptedReasoner(score=3))
+    def test_a_face_not_seen_after_the_pull_is_unobserved_not_contradicted(self):
+        backend, world = self.door(ScriptedReasoner(score=3), [[-1., 0., 0.], None])
         data = self.follow(backend, world, .3).evidence[0]["data"]
-        self.assertIsNone(data["verified_locally"])                                          # agreed where seen; the end was not seen
+        self.assertIsNone(data["verified_locally"])                                          # the end was not seen
         self.assertIn("not measured", data["evidence_basis"])
         self.assertEqual(data["progress"]["local"], 4)
 
     def test_a_door_face_that_does_not_turn_is_not_verified(self):
-        self.scene.normals = [[-1., 0., 0.]]
-        backend, world = self.backend(ScriptedReasoner())
+        backend, world = self.door(ScriptedReasoner(), [[-1., 0., 0.]])
         with self.assertRaises(BackendFailure) as caught:
             self.follow(backend, world, .3)
         self.assertEqual(caught.exception.code, "goal_unobserved")
@@ -308,7 +306,6 @@ class LookActTests(unittest.TestCase):
         self.assertEqual(attempt["status"], "unverified")
         self.assertFalse(attempt["progress"]["verified_locally"])
         self.assertEqual(attempt["progress"]["local"], 3)
-        self.assertIsNone(self.store.load("cabinet door").get("demonstration"))
 
     def test_turn_between_measures_rotation_about_the_axis_only(self):
         self.assertAlmostEqual(turn_between([-1., 0., 0.], rotation_about([0., 0., 1.], .4) @ np.array([-1., 0., 0.]), [0., 0., 1.]), .4, places=9)

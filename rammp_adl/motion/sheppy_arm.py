@@ -13,6 +13,7 @@ enforced mode a token from /acquire_control must be threaded through here.
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import threading
 import time
@@ -206,16 +207,25 @@ class SheppyArmClient:
             provenance=f"rammp_curobo:{PLANNER_NAMESPACE}:planning_time={float(result.planning_time):.4f}")
         return trajectory, {"message": result.message, "planning_time_s": float(result.planning_time)}
 
-    async def plan_to_pose(self, position_m, quaternion_xyzw, *, timeout_s=120., cancel_event=None):
-        """A collision-free path from the live joints to a base-frame tool pose."""
-        live = self.live_joints()
-        if live is None:
-            raise SheppyClientError("no fresh /joint_states; the planner needs the measured start")
+    async def plan_to_pose(self, position_m, quaternion_xyzw, *, timeout_s=120., cancel_event=None, start_joints=None):
+        """A collision-free path to a base-frame tool pose, from the live joints.
+
+        start_joints plans from a configuration the arm will be at instead (the end of a path already
+        planned). Such a plan is sent only if the arm is there by then: the start gate refuses it otherwise.
+        """
+        if start_joints is None:
+            live = self.live_joints()
+            if live is None:
+                raise SheppyClientError("no fresh /joint_states; the planner needs the measured start")
+            start_joints = live["position_rad"]
+        start = [float(v) for v in start_joints]
+        if len(start) != len(JOINTS) or not all(math.isfinite(v) for v in start):
+            raise SheppyClientError("a planning start is seven finite joint angles")
         goal = self._PlanToPose.Goal()
         goal.target.position.x, goal.target.position.y, goal.target.position.z = (float(v) for v in position_m)
         (goal.target.orientation.x, goal.target.orientation.y, goal.target.orientation.z,
          goal.target.orientation.w) = (float(v) for v in quaternion_xyzw)
-        goal.start_joints = [float(v) for v in live["position_rad"]]
+        goal.start_joints = start
         return await self._plan(self._plan_pose, goal, timeout_s=timeout_s, cancel_event=cancel_event)
 
     async def plan_to_joints(self, target_joints, *, timeout_s=120., cancel_event=None):

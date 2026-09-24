@@ -137,28 +137,35 @@ def context_constraint(record, *, confidence=.6):
             "validity": "true", "confidence": float(confidence)}
 
 
-def waypoints(record, tool_position, tool_orientation_xyzw, target_value):
-    """Tool poses along the constraint from the current tool pose up to the target."""
-    step = float(record["step"])
-    if not 0 < step or not math.isfinite(target_value) or target_value < 0:
-        raise ContractError("constraint step and target must be positive")
+def constraint_pose(record, tool_position, tool_orientation_xyzw, value, *, lag=0.):
+    """The tool pose (position, 3x3 rotation) at `value` along the constraint from the pose that holds the part now.
+
+    lag is the share of a revolute part's turn the wrist leaves to the grasp: a part that runs along
+    the hinge turns between the pads, so 0 turns the wrist with the door and 1 keeps it square.
+    """
     axis = _unit(record["axis_base"], "constraint axis")
     direction = float(record["direction"])
     position0 = np.asarray(tool_position, dtype=float)
     rotation0 = quaternion_matrix(tuple(float(v) for v in tool_orientation_xyzw))
+    if record["kind"] == "revolute":
+        pivot = np.asarray(record["pivot_base"], dtype=float)
+        position = pivot+rotation_about(axis, direction*value) @ (position0-pivot)
+        return position, rotation_about(axis, direction*value*(1.-lag)) @ rotation0
+    return position0+axis*direction*value, rotation0
+
+
+def waypoints(record, tool_position, tool_orientation_xyzw, target_value, *, lag=0., step=None):
+    """Tool poses along the constraint from the current tool pose up to the target, every step (the record's by default)."""
+    step = float(record["step"] if step is None else step)
+    if not 0 < step or not math.isfinite(target_value) or target_value < 0:
+        raise ContractError("constraint step and target must be positive")
     count = max(1, int(math.ceil(target_value/step-1e-9)))
     poses = []
     for index in range(1, count+1):
         value = min(target_value, index*step)
-        if record["kind"] == "revolute":
-            pivot = np.asarray(record["pivot_base"], dtype=float)
-            rotation = rotation_about(axis, direction*value)
-            position = pivot+rotation @ (position0-pivot)
-            orientation = quaternion_xyzw_from_matrix(rotation @ rotation0)
-        else:
-            position = position0+axis*direction*value
-            orientation = quaternion_xyzw_from_matrix(rotation0)
-        poses.append((float(value), tuple(float(v) for v in position), tuple(float(v) for v in orientation)))
+        position, rotation = constraint_pose(record, tool_position, tool_orientation_xyzw, value, lag=lag)
+        poses.append((float(value), tuple(float(v) for v in position),
+                      tuple(float(v) for v in quaternion_xyzw_from_matrix(rotation))))
     return poses
 
 

@@ -321,9 +321,9 @@ def create_node():
                                                selector=KeyframeSelector(min_interval_s=float(self.get_parameter("keyframe_min_interval_s").value)))
                     record_dir = self.get_parameter("record_dir").value
                     if record_dir:
-                        from .perception.scene_record import save_scene
+                        from .perception.scene_record import RuntimeRecorder
                         record_root = Path(record_dir) if Path(record_dir).is_absolute() else root/record_dir
-                        self.scene.recorder = lambda keyframe: save_scene(record_root, keyframe, source="runtime")
+                        self.scene.recorder = RuntimeRecorder(record_root)
                     self.get_logger().info(f"{scene_kind} scene: "+json.dumps(self.scene.describe()))
                 except Exception as exc:                    # noqa: BLE001 - reported, observe withheld
                     self.get_logger().warning(f"{scene_kind} scene unavailable ({exc}); observe is not wired")

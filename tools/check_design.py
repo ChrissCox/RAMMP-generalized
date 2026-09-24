@@ -9,6 +9,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import re
 from pathlib import Path
 
@@ -289,15 +290,27 @@ def main():
         context = read(path.with_name(path.name.replace(".plan.json", ".context.json")))
         validate(context, context_schema)
         check_plan(read(path), library, context)
-    for path in ROOT.rglob("*.json"):
-        read(path)
-    for path in ROOT.rglob("*"):
-        if path.is_file() and path.suffix in {".md", ".py", ".json", ".yaml", ".msg", ".srv", ".action"}:
-            content = path.read_text(encoding="utf-8")
-            require(not any(ord(c) < 32 and c not in "\r\n\t" for c in content), "control character")
+    for path in _files(ROOT):
+        try:
+            if path.suffix == ".json":
+                read(path)
+            if path.suffix in {".md", ".py", ".json", ".yaml", ".msg", ".srv", ".action"}:
+                content = path.read_text(encoding="utf-8")
+                require(not any(ord(c) < 32 and c not in "\r\n\t" for c in content), "control character")
+        except FileNotFoundError:
+            continue                                        # deleted while the walk ran
     check_links(ROOT)
     print(f"Design checks passed: {len(library['skills'])} skills, {len(plans)} example plans.")
     print("Offline only: no runtime precondition, collision, ROS, provider or hardware validation.")
+
+
+def _files(root):
+    """Every file under root, as rglob walks it, skipping what a running node deletes mid-walk (pruned bench scenes)."""
+    for folder, _, names in os.walk(root):
+        for name in names:
+            path = Path(folder)/name
+            if path.is_file():
+                yield path
 
 
 if __name__ == "__main__":
