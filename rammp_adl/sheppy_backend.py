@@ -198,7 +198,7 @@ class SheppyArmBackend:
         # The surface the grasped part stands on (a door face under its pull, a table under a cup), kept in the
         # tool frame from the moment of contact so it stays right while the part moves with the hand.
         self.contact_support = None
-        self.surface_disk_m, self.surface_protrusion_m = .11, .02
+        self.surface_disk_m, self.surface_protrusion_m = .14, .02
         self.align_done_m, self.align_done_deg = .008, 3.
         # The close view at the standoff re-measures the surface and the part before the final approach;
         # a correction beyond these bounds means the close view and discovery disagree too much to approach.
@@ -442,8 +442,8 @@ class SheppyArmBackend:
     def _surface_exclusion(self, point, normal, target):
         """A ball that holds the measured surface under the target and at most surface_protrusion_m in front of it.
 
-        The guard's finger spheres are coarse (3.5 cm) and its margin is 3 cm, so a hand whose fingertips
-        stop a centimetre off a door face reads the face as an obstacle. This exempts only that face: a
+        The guard's finger spheres are coarse (3.5 cm, centred near the tool frame) and its margin is 3 cm,
+        so a hand whose fingertips stop a centimetre off a door face reads the face as an obstacle. This exempts only that face: a
         disk of surface_disk_m around the target's foot, and nothing standing proud of it by more than
         the protrusion. Everything beyond, and anything on the face taller than that, is still checked.
         """

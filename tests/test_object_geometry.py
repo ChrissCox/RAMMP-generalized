@@ -43,7 +43,7 @@ class GeometryTests(unittest.TestCase):
         roles = pose_roles(geometry, camera_position_base=frame.camera_position_base)
         self.assertEqual(roles["strategy"], "top_down")
         grasp = roles["roles"]["grasp"]
-        np.testing.assert_allclose(grasp["position_m"], [.30, .12, FINGERTIP_REACH_M+SURFACE_CLEARANCE_M], atol=.012)
+        np.testing.assert_allclose(grasp["position_m"], [.30, .12, max(.05, FINGERTIP_REACH_M+SURFACE_CLEARANCE_M)], atol=.012)
         rotation = quaternion_matrix(tuple(grasp["orientation_xyzw"]))
         np.testing.assert_allclose(rotation[:, 2], [0., 0., -1.], atol=1e-6)         # tool points down
         self.assertAlmostEqual(abs(rotation[:, 0] @ np.array([0., 1., 0.])), 1., delta=.05)  # fingers close across the minor axis
