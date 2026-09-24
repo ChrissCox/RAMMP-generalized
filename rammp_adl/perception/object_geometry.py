@@ -16,10 +16,11 @@ from ..motion.kinematics import quaternion_xyzw_from_matrix
 from .geometry import PerceptionError
 
 GRIPPER_OPEN_M = .085          # nominal Robotiq 2F-85 stroke, as the aperture map assumes
-# How far the fingertips reach past the planner's tool_frame (end_effector_link + 0.12 m) along the approach:
-# the finger-tip collision meshes of the locked arm-gripper assembly (bundle-2), measured in that frame on
-# 2026-09-24 (z from -0.011 to +0.046 m). The tool frame sits at the root of the pads, not at their tips.
-FINGERTIP_REACH_M = .046
+# How far the fingertips reach past the planner's tool_frame (end_effector_link + 0.12 m) along the approach,
+# over the whole stroke: the finger-tip collision meshes of the articulated arm-gripper assembly (bundle-2),
+# measured in that frame on 2026-09-24, reach 0.046 m open and 0.059 m closed. Closing drives the tips 1.3 cm
+# further forward, so a grasp is placed for the closed reach. The tool frame is the root of the pads.
+FINGERTIP_REACH_M = .059
 SURFACE_CLEARANCE_M = .01      # fingertips stop this far off the surface the object stands on
 UP = np.array([0., 0., 1.])
 

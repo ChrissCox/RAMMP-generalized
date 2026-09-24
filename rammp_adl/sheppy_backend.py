@@ -200,6 +200,9 @@ class SheppyArmBackend:
         self.contact_support = None
         self.surface_disk_m, self.surface_protrusion_m = .11, .02
         self.align_done_m, self.align_done_deg = .008, 3.
+        # The close view at the standoff re-measures the surface and the part before the final approach;
+        # a correction beyond these bounds means the close view and discovery disagree too much to approach.
+        self.refine_radius_m, self.refine_max_shift_m, self.refine_max_tilt_deg = .15, .05, 12.
         self.last_trajectory = None                     # the last path flown to completion: the way out is the way in
         self.events = []
 
@@ -427,6 +430,75 @@ class SheppyArmBackend:
         behind = (rho*rho-delta*delta)/(2.*delta)
         return tuple(float(v) for v in foot-normal*behind), float(behind+delta)
 
+    async def _refine_contact(self, entity_id, position, orientation):
+        """From the standoff, re-measure the surface the part stands on and how far the part stands proud of it.
+
+        Discovery measures from 40 cm or more, where a small mount or kinematic error moves a door face by
+        a centimetre or two and tilts it by degrees; the fingertips stop one centimetre off it. So before the
+        final approach the depth of the close view places the grasp: at the fingertips' closed reach plus
+        clearance off the surface measured here, squared to it. Lateral placement stays with alignment.
+        Returns (position, orientation, support, record); refuses when the views disagree beyond the bounds.
+        """
+        import numpy as np
+        from .constraints import rotation_about
+        from .motion.kinematics import quaternion_matrix, quaternion_xyzw_from_matrix
+        from .perception.object_geometry import FINGERTIP_REACH_M, SURFACE_CLEARANCE_M, points_in_region, support_plane, to_base
+        support = self._entity_support(entity_id)
+        record = {"refined": False, "skipped": None}
+        rotation = quaternion_matrix(tuple(orientation))
+        if support is None or self.scene is None:
+            record["skipped"] = "no measured surface under this part"
+            return position, orientation, support, record
+        discovered = np.asarray(support[1], dtype=float)/np.linalg.norm(support[1])
+        if float(rotation[:, 2] @ -discovered) < math.cos(math.radians(30.)):
+            record["skipped"] = "this grasp does not approach the surface the part stands on"
+            return position, orientation, support, record
+        try:
+            keyframe = await self.scene.wait_for_keyframe(timeout_s=2.)
+        except Exception as exc:                            # noqa: BLE001 - the discovery surface stands, and the guard with it
+            record["skipped"] = f"no still close view: {exc}"
+            return position, orientation, support, record
+        target = np.asarray(position, dtype=float)
+
+        def measure():
+            points = to_base(points_in_region(keyframe, (0, 0, keyframe.width, keyframe.height), stride=2, max_range_m=.6),
+                             keyframe.base_from_camera)
+            near = points[np.linalg.norm(points-target, axis=1) < self.refine_radius_m]
+            plane = support_plane(near, camera_position=keyframe.camera_position_base, min_points=100)
+            if plane is None:
+                return None
+            origin, normal = np.asarray(plane["origin_m"]), np.asarray(plane["normal"])/np.linalg.norm(plane["normal"])
+            along = (points-target) @ normal
+            lateral = np.linalg.norm((points-target)-np.outer(along, normal), axis=1)
+            elevation = (points-origin) @ normal
+            part = elevation[(lateral < .03) & (elevation > .008) & (elevation < .10)]
+            height = float(np.percentile(part, 95)) if len(part) >= 10 else None
+            return origin, normal, float(plane["rms_m"]), height, int(len(part))
+        measured = await asyncio.to_thread(measure)
+        if measured is None:
+            record["skipped"] = "no surface around the target in the close view"
+            return position, orientation, support, record
+        origin, normal, rms, height, count = measured
+        tilt = math.degrees(math.acos(max(-1., min(1., float(normal @ discovered)))))
+        foot = target-normal*float((target-origin) @ normal)
+        elevation = max((height or 0.)-min(.03, (height or 0.)/2.), FINGERTIP_REACH_M+SURFACE_CLEARANCE_M)
+        refined = foot+normal*elevation
+        shift = float(np.linalg.norm(refined-target))
+        record.update(tilt_deg=round(tilt, 2), shift_m=round(shift, 4), part_height_m=None if height is None else round(height, 4),
+                      part_points=count, surface_rms_m=round(rms, 4), surface_point_m=[float(v) for v in origin],
+                      surface_normal=[float(v) for v in normal], fingertip_clearance_m=round(elevation-FINGERTIP_REACH_M, 4))
+        if tilt > self.refine_max_tilt_deg or shift > self.refine_max_shift_m:
+            raise BackendFailure("target_changed", f"the surface seen from the standoff is {tilt:.1f} degrees and {shift*100:.1f} cm "
+                                                   "from where discovery put it; not approaching on either")
+        # Square the approach to the face measured here: the smallest turn that takes the tool's z onto -normal.
+        z, goal = rotation[:, 2], -normal
+        axis = np.cross(z, goal)
+        turn = np.eye(3) if np.linalg.norm(axis) < 1e-9 else rotation_about(axis/np.linalg.norm(axis),
+                                                                             math.atan2(np.linalg.norm(axis), float(z @ goal)))
+        record["refined"] = True
+        return (tuple(float(v) for v in refined), tuple(float(v) for v in quaternion_xyzw_from_matrix(turn @ rotation)),
+                ([float(v) for v in origin], [float(v) for v in normal]), record)
+
     def _entity_support(self, entity_id):
         records = getattr(self.scene, "entities", None) or {}
         support = ((records.get(entity_id) or {}).get("grasp") or {}).get("support")
@@ -625,8 +697,11 @@ class SheppyArmBackend:
             # points around it are the intended contact, not an obstacle.
             exclusions, support = [], None
             if target["pose_role"] == "grasp":
+                target_position, target_orientation, support, refine = await self._refine_contact(
+                    target["entity_id"], target_position, target_orientation)
+                if alignment is not None:
+                    alignment["refine"] = refine
                 exclusions.append((tuple(target_position), self.grasp_exclusion_m))
-                support = self._entity_support(target["entity_id"])
                 if support is not None:
                     exclusions.append(self._surface_exclusion(*support, target_position))
             trajectory, planning, receipt, _ = await self._step_to(target_position, target_orientation, context,

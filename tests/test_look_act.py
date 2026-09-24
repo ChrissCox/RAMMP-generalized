@@ -184,6 +184,63 @@ class LookActTests(unittest.TestCase):
         self.assertEqual(len(departing), 2)
         self.assertAlmostEqual(departing[1][1], radius, places=9)
 
+    def test_the_standoff_view_re_measures_the_door_and_places_the_grasp_from_it(self):
+        # Discovery put the door face 1.5 cm deep and 6 degrees off; the close view at the standoff sees it true.
+        from synthetic_scene import K, looking_at, render
+        from rammp_adl.motion.kinematics import quaternion_matrix, quaternion_xyzw_from_matrix
+        from rammp_adl.perception.object_geometry import FINGERTIP_REACH_M, SURFACE_CLEARANCE_M
+        door_x, handle = .6, (.565, .6, .08, .12, .25, .35)            # a bar 3.5 cm proud of the face at x = .6
+        camera = looking_at([.27, .1, .3], [.6, .1, .3])
+        depth = render(camera, [handle], plane=("x", door_x))
+        scene = self.scene
+        scene.base_from_camera = camera
+
+        async def standoff_view(**_):
+            return Keyframe("kf-close", np.zeros(depth.shape+(3,), np.uint8), depth, K, "d405_color_optical_frame", 1, 100., 100., .02,
+                            camera, (0.,)*7, "requested", 100.)
+        scene.wait_for_keyframe = standoff_view
+        wrong = rotation_about([0., 0., 1.], np.radians(6.)) @ np.array([-1., 0., 0.])
+        scene.entities = {"handle_1": {"grasp": {"support": {"point_m": [.615, .1, .3], "normal": wrong.tolist()}}}}
+        guards = []
+        backend, world = self.backend(None)
+        factory = backend.guard_factory
+        backend.guard_factory = lambda **options: guards.append(options) or factory(**options)
+        approach = np.column_stack([[0., 1., 0.], [0., 0., 1.], [1., 0., 0.]])     # tool z along +x, into the door
+        start = np.array([.615, .1, .3])+wrong*(FINGERTIP_REACH_M+SURFACE_CLEARANCE_M)  # where discovery put the grasp
+
+        def place(world, evidence_id):
+            identities = world.snapshot().identities()
+            authority = world.authorize_source("test_observation", self.catalog.predicates)
+            world.register_evidence(evidence_id, source=authority, ttl_s=120., observed_at=world.clock(), predicates=[
+                {"predicate": "pose_valid", "validity": "true", "args": {"entity_id": "handle_1", "pose_role": "grasp"}}])
+            world.update_metric_pose(MetricPose("handle_1", "grasp", tuple(float(v) for v in start),
+                                                tuple(float(v) for v in quaternion_xyzw_from_matrix(approach)), tuple([0.]*36),
+                                                world.clock(), "base_link", identities["entity:handle_1"]+1, identities["calibration_id"],
+                                                identities["base_epoch"], evidence_id, 120.), source=authority)
+        place(world, "pose-close")
+        outcome = self.grasp_move(backend, world)
+        data = outcome.evidence[0]["data"]
+        refined = data["alignment"]["refine"]
+        self.assertTrue(refined["refined"])
+        self.assertAlmostEqual(refined["tilt_deg"], 6., delta=1.)
+        self.assertAlmostEqual(refined["part_height_m"], .035, delta=.006)
+        commanded = np.asarray(data["commanded"]["position_m"])
+        self.assertAlmostEqual(door_x-commanded[0], FINGERTIP_REACH_M+SURFACE_CLEARANCE_M, delta=.004)   # fingertips 1 cm off the real face
+        rotation = quaternion_matrix(tuple(data["commanded"]["orientation_xyzw"]))
+        self.assertGreater(float(rotation[:, 2] @ np.array([1., 0., 0.])), np.cos(np.radians(1.5)))         # squared to the real face
+        surface = guards[-1]["exclusions"][1]
+        self.assertAlmostEqual(surface[0][0]-door_x, backend.surface_disk_m**2/(2*backend.surface_protrusion_m)
+                               -backend.surface_protrusion_m/2, delta=.01)                                 # centred behind the real face
+        # A close view that disagrees with discovery beyond the bounds is refused, not approached.
+        self.client = TrackingClient(knuckle=.01)
+        scene.entities = {"handle_1": {"grasp": {"support": {"point_m": [.615, .1, .3],
+                                                             "normal": (rotation_about([0., 0., 1.], np.radians(25.)) @ np.array([-1., 0., 0.])).tolist()}}}}
+        backend, world = self.backend(None)
+        place(world, "pose-far")
+        with self.assertRaises(BackendFailure) as caught:
+            self.grasp_move(backend, world)
+        self.assertEqual(caught.exception.code, "target_changed")
+
     def test_without_a_reasoner_or_look_act_the_geometric_target_is_used(self):
         backend, world = self.backend(None)
         outcome = self.grasp_move(backend, world)
