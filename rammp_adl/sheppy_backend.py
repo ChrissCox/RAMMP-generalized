@@ -202,7 +202,8 @@ class SheppyArmBackend:
         self.align_done_m, self.align_done_deg = .008, 3.
         # The close view at the standoff re-measures the surface and the part before the final approach;
         # a correction beyond these bounds means the close view and discovery disagree too much to approach.
-        self.refine_radius_m, self.refine_max_shift_m, self.refine_max_tilt_deg = .15, .05, 12.
+        self.refine_radius_m, self.refine_max_shift_m, self.refine_max_tilt_deg = .15, .06, 12.
+        self.refine_max_yaw_deg, self.part_search_m = 30., .06
         self.last_trajectory = None                     # the last path flown to completion: the way out is the way in
         self.events = []
 
@@ -454,21 +455,23 @@ class SheppyArmBackend:
         behind = (rho*rho-delta*delta)/(2.*delta)
         return tuple(float(v) for v in foot-normal*behind), float(behind+delta)
 
-    async def _refine_contact(self, entity_id, position, orientation):
-        """From the standoff, re-measure the surface the part stands on and how far the part stands proud of it.
+    async def _refine_contact(self, entity_id, position, orientation, *, centre=True):
+        """From the standoff, measure the surface the part stands on and the part itself, and place the grasp from that.
 
-        Discovery measures from 40 cm or more, where a small mount or kinematic error moves a door face by
-        a centimetre or two and tilts it by degrees; the fingertips stop one centimetre off it. So before the
-        final approach the depth of the close view places the grasp: at the fingertips' closed reach plus
-        clearance off the surface measured here, squared to it. Lateral placement stays with alignment.
-        Returns (position, orientation, support, record); refuses when the views disagree beyond the bounds.
+        Discovery measures from 40 cm or more, where a small mount or kinematic error moves a door face by a
+        centimetre or two and tilts it by degrees, and a model judging a wrist image cannot tell where along a
+        pull the fingers will close. So before the final approach the depth of the close view decides: the
+        surface is refitted around the target; the part is the connected cluster standing proud of it nearest
+        the target, and (with centre) the grasp moves onto the middle of that cluster with the fingers closing
+        across its long axis; the tool is squared to the surface at the fingertips' closed reach plus clearance
+        off it. Returns (position, orientation, support, record); refuses when the close view and discovery
+        disagree beyond the bounds.
         """
         import numpy as np
-        from .constraints import rotation_about
         from .motion.kinematics import quaternion_matrix, quaternion_xyzw_from_matrix
         from .perception.object_geometry import FINGERTIP_REACH_M, SURFACE_CLEARANCE_M, points_in_region, support_plane, to_base
         support = self._entity_support(entity_id)
-        record = {"refined": False, "skipped": None}
+        record = {"refined": False, "centred_on_part": False, "skipped": None}
         rotation = quaternion_matrix(tuple(orientation))
         if support is None or self.scene is None:
             record["skipped"] = "no measured surface under this part"
@@ -495,33 +498,74 @@ class SheppyArmBackend:
             along = (points-target) @ normal
             lateral = np.linalg.norm((points-target)-np.outer(along, normal), axis=1)
             elevation = (points-origin) @ normal
-            part = elevation[(lateral < .03) & (elevation > .008) & (elevation < .10)]
-            height = float(np.percentile(part, 95)) if len(part) >= 10 else None
-            return origin, normal, float(plane["rms_m"]), height, int(len(part))
+            candidates = (lateral < self.refine_radius_m) & (elevation > .008) & (elevation < .10)
+            cluster = _nearest_cluster(points[candidates], normal, target, cell_m=.01, seed_within_m=self.part_search_m)
+            if cluster is None or len(cluster) < 20:
+                return origin, normal, float(plane["rms_m"]), None, 0, None
+            height = float(np.percentile((cluster-origin) @ normal, 95))
+            flat = cluster-np.outer((cluster-origin) @ normal, normal)
+            middle = flat.mean(axis=0)
+            spread = np.cov((flat-middle).T)
+            values, vectors = np.linalg.eigh(spread)
+            major = vectors[:, int(np.argmax(values))]
+            major = major-(major @ normal)*normal
+            major /= np.linalg.norm(major)
+            ordered = np.sort(values)[::-1]
+            elongation = float(np.sqrt(ordered[0]/max(ordered[1], 1e-12)))
+            return origin, normal, float(plane["rms_m"]), height, int(len(cluster)), (middle, major, elongation)
         measured = await asyncio.to_thread(measure)
         if measured is None:
             record["skipped"] = "no surface around the target in the close view"
             return position, orientation, support, record
-        origin, normal, rms, height, count = measured
+        origin, normal, rms, height, count, part = measured
         tilt = math.degrees(math.acos(max(-1., min(1., float(normal @ discovered)))))
-        foot = target-normal*float((target-origin) @ normal)
+        z = -normal
+        old_x = rotation[:, 0]-(rotation[:, 0] @ normal)*normal
+        old_x /= np.linalg.norm(old_x)
+        if centre and part is not None:
+            foot, major, elongation = part
+            across = np.cross(normal, major) if elongation >= 1.8 else old_x
+            across = across/np.linalg.norm(across)
+            if across @ old_x < 0:
+                across = -across
+            record.update(centred_on_part=True, part_elongation=round(elongation, 2))
+        else:
+            foot, across = target-normal*float((target-origin) @ normal), old_x
+        yaw = math.degrees(math.acos(max(-1., min(1., float(abs(across @ old_x))))))
         elevation = max((height or 0.)-min(.03, (height or 0.)/2.), FINGERTIP_REACH_M+SURFACE_CLEARANCE_M)
         refined = foot+normal*elevation
         shift = float(np.linalg.norm(refined-target))
-        record.update(tilt_deg=round(tilt, 2), shift_m=round(shift, 4), part_height_m=None if height is None else round(height, 4),
-                      part_points=count, surface_rms_m=round(rms, 4), surface_point_m=[float(v) for v in origin],
-                      surface_normal=[float(v) for v in normal], fingertip_clearance_m=round(elevation-FINGERTIP_REACH_M, 4))
-        if tilt > self.refine_max_tilt_deg or shift > self.refine_max_shift_m:
-            raise BackendFailure("target_changed", f"the surface seen from the standoff is {tilt:.1f} degrees and {shift*100:.1f} cm "
-                                                   "from where discovery put it; not approaching on either")
-        # Square the approach to the face measured here: the smallest turn that takes the tool's z onto -normal.
-        z, goal = rotation[:, 2], -normal
-        axis = np.cross(z, goal)
-        turn = np.eye(3) if np.linalg.norm(axis) < 1e-9 else rotation_about(axis/np.linalg.norm(axis),
-                                                                             math.atan2(np.linalg.norm(axis), float(z @ goal)))
+        record.update(tilt_deg=round(tilt, 2), yaw_deg=round(yaw, 2), shift_m=round(shift, 4),
+                      part_height_m=None if height is None else round(height, 4), part_points=count, surface_rms_m=round(rms, 4),
+                      surface_point_m=[float(v) for v in origin], surface_normal=[float(v) for v in normal],
+                      fingertip_clearance_m=round(elevation-FINGERTIP_REACH_M, 4))
+        if tilt > self.refine_max_tilt_deg or shift > self.refine_max_shift_m or yaw > self.refine_max_yaw_deg:
+            raise BackendFailure("target_changed", f"the part seen from the standoff is {tilt:.1f} degrees, {yaw:.1f} degrees about the "
+                                                   f"approach and {shift*100:.1f} cm from where discovery put it; not approaching on either")
+        across = across-(across @ z)*z
+        across /= np.linalg.norm(across)
         record["refined"] = True
-        return (tuple(float(v) for v in refined), tuple(float(v) for v in quaternion_xyzw_from_matrix(turn @ rotation)),
+        return (tuple(float(v) for v in refined),
+                tuple(float(v) for v in quaternion_xyzw_from_matrix(np.column_stack([across, np.cross(z, across), z]))),
                 ([float(v) for v in origin], [float(v) for v in normal]), record)
+
+    async def _line_up_standoff(self, position, orientation, context, *, minimum_back_m=.06):
+        """Move the tool onto the grasp's approach line, so the last centimetres go straight in."""
+        import numpy as np
+        from .motion.kinematics import quaternion_matrix
+        live = self.client.live_joints()
+        if live is None or self.chain is None:
+            return None
+        tool_position, tool_orientation = self._tool_pose(live["position_rad"])
+        rotation = quaternion_matrix(tuple(orientation))
+        back = max(float((np.asarray(position)-np.asarray(tool_position)) @ rotation[:, 2]), minimum_back_m)
+        standoff = np.asarray(position)-rotation[:, 2]*back
+        turn = float(np.degrees(np.arccos(max(-1., min(1., (np.trace(quaternion_matrix(tuple(tool_orientation)).T @ rotation)-1.)/2.)))))
+        if float(np.linalg.norm(standoff-np.asarray(tool_position))) < .005 and turn < 2.:
+            return None
+        await self._step_to(tuple(float(v) for v in standoff), tuple(orientation), context, safety_class="contact",
+                            exclusions=[(tuple(float(v) for v in position), self.grasp_exclusion_m)])
+        return {"standoff_m": [float(v) for v in standoff], "turn_deg": round(turn, 2)}
 
     def _entity_support(self, entity_id):
         records = getattr(self.scene, "entities", None) or {}
@@ -715,16 +759,25 @@ class SheppyArmBackend:
         await self._own("move_to_pose", context)
         try:
             target_position, target_orientation, alignment = tuple(pose.position_m), tuple(pose.orientation_xyzw), None
+            support = None
             if target["pose_role"] == "grasp":
-                target_position, target_orientation, alignment = await self._look_act(target["entity_id"], pose, context)
+                # The close view at the standoff places the grasp when it can find the part; the model aligns
+                # only when it cannot, and the close view then still sets the depth.
+                target_position, target_orientation, support, refine = await self._refine_contact(
+                    target["entity_id"], target_position, target_orientation, centre=True)
+                if refine["centred_on_part"]:
+                    alignment = {"calls": 0, "steps": [], "converged": True, "skipped": "placed by the close view",
+                                 "shift_m": [0., 0., 0.], "yaw_rad": 0., "refine": refine,
+                                 "line_up": await self._line_up_standoff(target_position, target_orientation, context)}
+                else:
+                    target_position, target_orientation, alignment = await self._look_act(target["entity_id"], pose, context)
+                    target_position, target_orientation, support, refine = await self._refine_contact(
+                        target["entity_id"], target_position, target_orientation, centre=False)
+                    alignment["refine"] = refine
             # Arriving at the grasp role means touching the target: depth
             # points around it are the intended contact, not an obstacle.
-            exclusions, support = [], None
+            exclusions = []
             if target["pose_role"] == "grasp":
-                target_position, target_orientation, support, refine = await self._refine_contact(
-                    target["entity_id"], target_position, target_orientation)
-                if alignment is not None:
-                    alignment["refine"] = refine
                 exclusions.append((tuple(target_position), self.grasp_exclusion_m))
                 if support is not None:
                     exclusions.append(self._surface_exclusion(*support, target_position))
@@ -995,6 +1048,39 @@ class SheppyArmBackend:
                     self.constraint_store.save(record)
             except Exception as exc:                        # noqa: BLE001 - bookkeeping never masks the outcome
                 self.events.append({"event": "attempt_record_failed", "detail": str(exc), "at": time.monotonic()})
+
+
+def _nearest_cluster(points, normal, target, *, cell_m=.01, reach_cells=2, seed_within_m=None):
+    """The connected group of points (in the surface's plane, on a coarse grid) nearest the target's line.
+
+    The group starts from the occupied cell nearest the line, which must lie within seed_within_m of it,
+    and grows through every connected cell, so a part is taken whole however far it runs.
+    """
+    import numpy as np
+    if len(points) == 0:
+        return None
+    normal = np.asarray(normal, dtype=float)
+    a = np.cross(normal, [0., 0., 1.]) if abs(normal[2]) < .9 else np.cross(normal, [1., 0., 0.])
+    a /= np.linalg.norm(a)
+    b = np.cross(normal, a)
+    relative = np.asarray(points, dtype=float)-np.asarray(target, dtype=float)
+    cells = np.floor(np.column_stack([relative @ a, relative @ b])/cell_m).astype(int)
+    occupied = {}
+    for index, cell in enumerate(map(tuple, cells)):
+        occupied.setdefault(cell, []).append(index)
+    seed = min(occupied, key=lambda c: c[0]*c[0]+c[1]*c[1])
+    if seed_within_m is not None and np.hypot(seed[0]+.5, seed[1]+.5)*cell_m > seed_within_m:
+        return None
+    seen, frontier = {seed}, [seed]
+    while frontier:
+        x, y = frontier.pop()
+        for dx in range(-reach_cells, reach_cells+1):
+            for dy in range(-reach_cells, reach_cells+1):
+                neighbour = (x+dx, y+dy)
+                if neighbour in occupied and neighbour not in seen:
+                    seen.add(neighbour)
+                    frontier.append(neighbour)
+    return np.asarray(points)[[i for cell in seen for i in occupied[cell]]]
 
 
 async def bootstrap_robot_facts(world, client, *, source_name="sheppy_client_bootstrap",

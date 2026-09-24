@@ -206,7 +206,8 @@ class LookActTests(unittest.TestCase):
         factory = backend.guard_factory
         backend.guard_factory = lambda **options: guards.append(options) or factory(**options)
         approach = np.column_stack([[0., 1., 0.], [0., 0., 1.], [1., 0., 0.]])     # tool z along +x, into the door
-        start = np.array([.615, .1, .3])+wrong*(FINGERTIP_REACH_M+SURFACE_CLEARANCE_M)  # where discovery put the grasp
+        # Where discovery (and a model's alignment) left the grasp: 1.5 cm deep, 6 degrees off, and 3.5 cm down the bar.
+        start = np.array([.615, .1, .265])+wrong*(FINGERTIP_REACH_M+SURFACE_CLEARANCE_M)
 
         def place(world, evidence_id):
             identities = world.snapshot().identities()
@@ -226,8 +227,13 @@ class LookActTests(unittest.TestCase):
         self.assertAlmostEqual(refined["part_height_m"], .035, delta=.006)
         commanded = np.asarray(data["commanded"]["position_m"])
         self.assertAlmostEqual(door_x-commanded[0], FINGERTIP_REACH_M+SURFACE_CLEARANCE_M, delta=.004)   # fingertips 1 cm off the real face
+        np.testing.assert_allclose(commanded[1:], [.10, .30], atol=.006)                                 # on the middle of the bar
+        self.assertTrue(refined["centred_on_part"])
         rotation = quaternion_matrix(tuple(data["commanded"]["orientation_xyzw"]))
         self.assertGreater(float(rotation[:, 2] @ np.array([1., 0., 0.])), np.cos(np.radians(1.5)))         # squared to the real face
+        self.assertGreater(abs(float(rotation[:, 0] @ np.array([0., 1., 0.]))), np.cos(np.radians(5.)))   # fingers close across the bar
+        self.assertEqual(data["alignment"]["skipped"], "placed by the close view")                        # no model nudges needed
+        self.assertEqual(len(self.client.sent), 2)                                                          # line up the standoff, then straight in
         surface = guards[-1]["exclusions"][1]
         self.assertAlmostEqual(surface[0][0]-door_x, backend.surface_disk_m**2/(2*backend.surface_protrusion_m)
                                -backend.surface_protrusion_m/2, delta=.01)                                 # centred behind the real face
