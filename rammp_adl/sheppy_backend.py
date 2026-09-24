@@ -193,6 +193,7 @@ class SheppyArmBackend:
         self.holding_id = None
         self.current_pose = None
         self.log = lambda message: None                 # the node replaces this with its logger
+        self.record_root = None                         # artifacts/bench: guard trips are saved for offline replay
         self.at_contact = False                         # the tool is parked where it touches something on purpose
         self.last_trajectory = None                     # the last path flown to completion: the way out is the way in
         self.events = []
@@ -377,6 +378,17 @@ class SheppyArmBackend:
             raise BackendFailure("cancelled", receipt["message"])
         if receipt["status"] == "guard_trip":
             trip = receipt.get("trip") or {}
+            if self.record_root is not None and trip.get("kind") == "collision" and guard is not None:
+                from .perception.scene_record import save_guard_trip
+                live = self.client.live_joints()
+                reader = getattr(guard, "depth_reader", None)
+                save_guard_trip(self.record_root, depth_frame=reader() if callable(reader) else None,
+                                joints_rad=(live or {}).get("position_rad") or trajectory.points[0].state.position,
+                                trajectory=trajectory, elapsed_s=float(receipt.get("progress") or 0.)*trajectory.duration_s,
+                                exclusions=getattr(guard, "exclusions", ()), tool_exclusion_m=getattr(guard, "tool_exclusion_m", 0.),
+                                trip=checked_copy(trip), context={"node_id": context.node_id, "task_id": context.task_id,
+                                                                  "safety_class": safety_class,
+                                                                  "target": {"position_m": list(position), "orientation_xyzw": list(orientation)}})
             # An obstacle on the remaining path means the collision evidence
             # the plan was admitted against is stale: stop, then replan.
             # Contact, a blind camera or lost state is a supervisor fault.

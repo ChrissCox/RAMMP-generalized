@@ -174,7 +174,7 @@ def create_node():
                                   ("sphere_bundle_dir", "artifacts/jetson/real-world-ready/assembly/bundle-2"),
                                   ("touch_nm", 3.0), ("keyframe_feed_hz", 5.0), ("scene", "grounded"),
                                   ("face_model_path", "artifacts/models/face_detection_yunet_2023mar.onnx"),
-                                  ("keyframe_min_interval_s", 3.0), ("scene_refresh", True), ("scene_refresh_interval_s", 30.0),
+                                  ("keyframe_min_interval_s", 3.0), ("record_dir", "artifacts/bench"), ("scene_refresh", True), ("scene_refresh_interval_s", 30.0),
                                   ("transit_speed_scale", 0.4), ("contact_speed_scale", 0.25), ("max_evidence_age_s", 600.0), ("max_viewpoints", 6), ("wrist_rgb_topic", "/wrist_camera/color/image_raw"),
                                   ("wrist_depth_topic", "/wrist_camera/aligned_depth_to_color/image_raw"),
                                   ("wrist_rgb_info_topic", "/wrist_camera/color/camera_info"),
@@ -319,6 +319,11 @@ def create_node():
                                                face_screen=screen, pose_validity_s=120.,
                                                dump_dir=root/"artifacts/keyframes",
                                                selector=KeyframeSelector(min_interval_s=float(self.get_parameter("keyframe_min_interval_s").value)))
+                    record_dir = self.get_parameter("record_dir").value
+                    if record_dir:
+                        from .perception.scene_record import save_scene
+                        record_root = Path(record_dir) if Path(record_dir).is_absolute() else root/record_dir
+                        self.scene.recorder = lambda keyframe: save_scene(record_root, keyframe, source="runtime")
                     self.get_logger().info(f"{scene_kind} scene: "+json.dumps(self.scene.describe()))
                 except Exception as exc:                    # noqa: BLE001 - reported, observe withheld
                     self.get_logger().warning(f"{scene_kind} scene unavailable ({exc}); observe is not wired")
@@ -356,6 +361,9 @@ def create_node():
                 self.scene.bind_world(runtime.world)
             runtime.executor.confirmation_callback = self._profile_confirmation(runtime)
             runtime.backend.log = self.get_logger().info
+            if self.get_parameter("record_dir").value:
+                record_dir = Path(self.get_parameter("record_dir").value)
+                runtime.backend.record_root = record_dir if record_dir.is_absolute() else Path(runtime.catalog.root)/record_dir
             if self.scene is not None:
                 runtime.executor.replan_images = self._replan_images
             return runtime

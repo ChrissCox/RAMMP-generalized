@@ -57,6 +57,7 @@ class GroundedScene:
         self.pose_validity_s, self.match_distance_m, self.max_entities = float(pose_validity_s), float(match_distance_m), int(max_entities)
         self.egress = dict(max_long_edge=640, max_bytes=200000, **(egress or {}))
         self.dump_dir = None if dump_dir is None else Path(dump_dir)
+        self.recorder = None                            # called with each selected keyframe, for the offline bench
         self.geometry_options = dict(geometry_options or {})
         self.keyframes = deque(maxlen=keep_keyframes)
         self.latest = None
@@ -96,7 +97,9 @@ class GroundedScene:
             if keyframe is not None:
                 self.keyframes.append(keyframe)
                 self.latest = keyframe
-            return keyframe
+        if keyframe is not None and self.recorder is not None:
+            self.recorder(keyframe)                     # outside the lock: a disk write never holds up the scene
+        return keyframe
 
     def current_keyframe(self, *, max_age_s=10.):
         """The latest keyframe if the camera has not moved since and it is fresh."""
