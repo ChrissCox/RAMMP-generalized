@@ -13,3 +13,4 @@ log/
 artifacts
 .pytest_cache/
 .vscode/browse.vc*
+.venv-policy

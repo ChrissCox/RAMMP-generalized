@@ -350,6 +350,27 @@ Every attempt is appended to the record: parameters, target, how far it got, why
 
 Imagery locality: the deployment publishes both cameras on ROS domain 0 over the host network, which this runtime cannot confine. The [imagery policy](../config/imagery-locality.json) lists that domain as the deployment's own, and that listing admits the subscriptions; nothing else is required.
 
+## Teleop demonstrations for learned skill phases
+
+Learned policies may drive a skill's contact phase (AGENTS.md). Their training data is recorded with the arm on the `demos` profile, which pairs the rammp-teleop Xbox pad with the runtime's own D405 wrist camera, so the policy sees what it will see at run time:
+
+```zsh
+cd /home/abra/rammp-deployments/december_2026 && sheppy up demos --manifest sheppy-manifest.yaml
+cd ~/RAMMP-generalized && source .venv/bin/activate
+python tools/demo_record.py record --task door_handle_grasp    # A starts and stops an episode, LB throws one away
+python tools/demo_record.py list
+```
+
+[demo_record.py](../tools/demo_record.py) only listens: wrist colour and depth at half resolution, joints, knuckle and the operator's twist and gripper commands at 15 Hz, under `artifacts/demos/<task>/episode_NNN/`. Training runs on the Jetson in a separate environment, `.venv-policy`, with LeRobot 0.4.4 pinned to the Jetson's CUDA PyTorch 2.10:
+
+```zsh
+.venv-policy/bin/python tools/policy_train.py convert --task door_handle_grasp    # kept episodes -> a LeRobot dataset
+.venv-policy/bin/python tools/policy_train.py train --task door_handle_grasp      # ACT, one-second chunks at 15 Hz, on the GPU
+.venv-policy/bin/python tools/policy_train.py status --task door_handle_grasp
+```
+
+[policy_train.py](../tools/policy_train.py) learns the next state (seven joints and the knuckle) from the wrist image and the current state. A 20-step smoke run on synthetic episodes trained at about 3.7 steps/s at batch 4 on the Jetson; 40 000 steps is an overnight run, and each checkpoint takes about 600 MB. No policy drives the arm yet: the skill-side runner is built once a policy has been trained on real demonstrations.
+
 ## Inputs and remaining work before deployment
 
 The Jetson camera identities, user-confirmed Robotiq 2F-85 and local Astra access are recorded in [Jetson setup](jetson.md). No previous camera calibration exists; the single-marker estimates remain provisional. Robot-referenced transforms, clock alignment, physical profiles and installed-assembly geometry remain integration dependencies. Static cuRobo boundary handling and the physical trajectory command transport are implemented and tested in the documented simulation scopes. Driver/firmware compatibility and gripper calibration are engineering verification work; the user does not need to supply the web-interface address or firmware to continue that work. See [hardware testing](hardware-testing.md) and the [fact sheet](design/00-interface-fact-sheet.md). Package maintainer contact and repository license metadata also need real project values before distribution.
