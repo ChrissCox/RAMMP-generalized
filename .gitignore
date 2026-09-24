@@ -12,4 +12,4 @@ install/
 log/
 artifacts
 .pytest_cache/
-.vscode/browse.vc.db*
+.vscode/browse.vc*
