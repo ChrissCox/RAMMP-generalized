@@ -540,6 +540,21 @@ class DagExecutor:
                     return self._result(task_id, "incomplete", history,
                                       f"{last.failure_code} repeated after a replan: {last.detail}"[:512], replans)
                 repeated = signature
+                # Before a new plan is paid for: a confident fast judgment that no plan can help ends the task here.
+                decider = getattr(self, "decider", None)
+                if decider is not None and getattr(decider, "available", False) and replans < max_replans:
+                    from .decisions import decide_after_failure
+                    stop, decision = await decide_after_failure(
+                        decider, task_text=task_text, skill=plan_node["skill"] if plan_node else "unknown",
+                        failure_code=last.failure_code, detail=last.detail or "", attempt=replans,
+                        threshold=getattr(self, "stop_threshold", .85))
+                    self.trace.emit("fast_decision", question="after_failure", choice=decision.choice,
+                                    confidence=round(decision.confidence, 3), latency_s=round(decision.latency_s, 3),
+                                    error=decision.error)
+                    if stop:
+                        return self._result(task_id, "incomplete", history,
+                                          (f"{last.failure_code}: {last.detail} (stopped without a replan: jev "
+                                           f"{decision.confidence:.2f} that no new plan can help)")[:512], replans)
             feedback = {"previous_attempt": {"status": result.status, "reason": result.reason[:512],
                         "last_failed_node": ({"node_id": last.node_id, "skill": plan_node["skill"] if plan_node else None,
                                               "failure_code": last.failure_code, "detail": last.detail[:512]}

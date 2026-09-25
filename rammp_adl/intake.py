@@ -87,11 +87,31 @@ def validate_goal(catalog, goal, context, candidates):
     return checked_copy(goal)
 
 
-async def normalize_task(reasoner, catalog, context, task_text, *, available_skills):
-    """Ask Astra for the goal, then accept it only if it validates locally."""
+async def normalize_task(reasoner, catalog, context, task_text, *, available_skills, decider=None, threshold=.8,
+                         log=None):
+    """Ask for the goal, then accept it only if it validates locally.
+
+    With a decider (Jev), the runtime first lists every goal this scene can bind and
+    Jev picks one; a confident pick that validates is the goal. Anything else, a low
+    confidence, "none of these", a transport failure or a pick that does not
+    validate, asks Astra exactly as without it.
+    """
     candidates = goal_candidates(catalog, available_skills)
     if not candidates:
         raise IntakeError("NEED_CAPABILITY", "no registered skill establishes any outcome; nothing can be a goal")
+    if decider is not None and decider.available:
+        from .decisions import decide_goal
+        goal, decision = await decide_goal(decider, task_text, context, candidates, threshold=threshold)
+        say = log or (lambda message: None)
+        if goal is not None:
+            try:
+                accepted = validate_goal(catalog, goal, context, candidates)
+                say(f"goal from jev: {decision.choice} at {decision.confidence:.2f} in {decision.latency_s*1000:.0f} ms")
+                return accepted
+            except IntakeError as exc:
+                say(f"jev's goal {decision.choice} did not validate ({exc.detail}); asking astra")
+        else:
+            say(f"jev: {decision.choice or decision.error} at {decision.confidence:.2f}; asking astra")
     result = await reasoner.normalize_goal(context, task_text, predicates=candidates)
     if result.status != "OK" or result.goal is None:
         raise IntakeError(result.status, result.detail)

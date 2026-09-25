@@ -8,6 +8,7 @@ Read docs/project-prompt.md and docs/design/00-README.md. Read the relevant desi
 - interfaces/: canonical project-owned ROS IDL with build packaging, not existing upstream APIs; ROS compilation remains a separate check.
 - docs/design/00-interface-fact-sheet.md: source-pinned external facts and outstanding deployment checks.
 - config/reasoning.json: OpenAI gpt-6-astra selection, effort tiers and bounded cloud settings.
+- config/decisions.json: TypeSafe Jev for fast typed decisions over options the runtime builds itself (the task's goal, stop or replan after a failure); anything it is unsure of, or any failure, falls back to Astra.
 - config/sheppy-bench.context.json and config/imagery-locality.json: the bench's physical profiles and the deployment's routable camera domain.
 
 Task-specific sequencing belongs in plans. Reusable physical behavior belongs in implemented skills. A YAML declaration never auto-creates a handler. Never generate executable code, arbitrary predicates, resource claims, safety limits, or retry policies from model output. The model names objects, marks boxes and grasp points, proposes a constraint's parameters and nudges a grasp target in bounded steps; metric poses, planning, guards and every world fact stay local. Register only implemented, tested capabilities; capabilities this client cannot provide are declared by the operator as acknowledged gaps and logged at startup.

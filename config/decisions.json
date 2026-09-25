@@ -1,0 +1,9 @@
+{
+  "provider": "typesafe",
+  "endpoint": "https://api.typesafe.ai/v1/systemone",
+  "model": "jev-latest",
+  "api_key_env": "TYPESAFE_API_KEY",
+  "timeout_s": 3.0,
+  "goal_min_confidence": 0.8,
+  "stop_min_confidence": 0.85
+}

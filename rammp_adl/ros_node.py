@@ -175,7 +175,7 @@ def create_node():
                                   ("touch_nm", 3.0), ("keyframe_feed_hz", 5.0), ("scene", "grounded"),
                                   ("face_model_path", "artifacts/models/face_detection_yunet_2023mar.onnx"),
                                   ("keyframe_min_interval_s", 3.0), ("record_dir", "artifacts/bench"), ("scene_refresh", False), ("scene_refresh_interval_s", 30.0),
-                                  ("model_progress_check", False), ("compliant_contact", False),
+                                  ("model_progress_check", False), ("compliant_contact", False), ("jev_decisions", True),
                                   ("transit_speed_scale", 0.4), ("contact_speed_scale", 0.25), ("max_evidence_age_s", 600.0), ("max_viewpoints", 6), ("wrist_rgb_topic", "/wrist_camera/color/image_raw"),
                                   ("wrist_depth_topic", "/wrist_camera/aligned_depth_to_color/image_raw"),
                                   ("wrist_rgb_info_topic", "/wrist_camera/color/camera_info"),
@@ -259,6 +259,23 @@ def create_node():
                 self.get_logger().info("sheppy client runtime ready; available skills: "
                                        + (", ".join(self.runtime.registry.available_skills) or "none")
                                        + f"; motion armed={self.client.motion_enabled}")
+
+        def _jev_decider(self, runtime):
+            """TypeSafe's Jev for fast typed decisions when the operator switched it on; (None, threshold) otherwise."""
+            if not self.get_parameter("jev_decisions").value:
+                return None, .85
+            from .decisions import JevDecider, load_config
+            try:
+                config = load_config(runtime.catalog.root)
+            except (OSError, ValueError) as exc:
+                self.get_logger().warning(f"jev decisions requested but not configured ({exc}); astra decides alone")
+                return None, .85
+            decider = JevDecider(config, log=self.get_logger().info)
+            if not decider.available:
+                self.get_logger().warning(f"jev decisions requested but {config['api_key_env']} is not set; astra decides alone")
+                return None, .85
+            runtime.executor.goal_threshold = float(config["goal_min_confidence"])
+            return decider, float(config["stop_min_confidence"])
 
         def _sheppy_runtime(self, catalog):
             """Compose the runtime as a client of sheppy's arm module; nothing is started."""
@@ -364,6 +381,7 @@ def create_node():
             runtime.backend.log = self.get_logger().info
             runtime.backend.model_progress_check = bool(self.get_parameter("model_progress_check").value)
             runtime.backend.compliant_pull = bool(self.get_parameter("compliant_contact").value)
+            runtime.executor.decider, runtime.executor.stop_threshold = self._jev_decider(runtime)
             if self.get_parameter("record_dir").value:
                 record_dir = Path(self.get_parameter("record_dir").value)
                 runtime.backend.record_root = record_dir if record_dir.is_absolute() else Path(runtime.catalog.root)/record_dir
@@ -553,7 +571,9 @@ def create_node():
                              + (f"; skipped {seeded['skipped']}" if seeded["skipped"] else ""))
                     self._intake_phase = "INTAKE_NORMALIZING_GOAL"
                     goal = await normalize_task(reasoner, runtime.catalog, runtime.world.snapshot().context,
-                                                task_text, available_skills=runtime.registry.available_skills)
+                                                task_text, available_skills=runtime.registry.available_skills,
+                                                decider=runtime.executor.decider, log=log.info,
+                                                threshold=getattr(runtime.executor, "goal_threshold", .8))
                     runtime.world.replace_goal(goal)
                 except BaseException as exc:
                     # The task's runtime is abandoned: its reasoner closes and the scene answers to the standing one again.
