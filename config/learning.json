@@ -1,0 +1,16 @@
+{
+  "writer": {
+    "provider": "openai",
+    "api": "responses",
+    "model": "gpt-6-astra",
+    "reasoning_effort": "medium",
+    "api_key_env": "OPENAI_API_KEY",
+    "request_timeout_s": 90,
+    "max_output_tokens": 6000,
+    "store": false
+  },
+  "max_rounds": 4,
+  "examples": 4,
+  "promote_after": 3,
+  "retire_after": 3
+}

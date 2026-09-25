@@ -119,6 +119,11 @@ class _Binding:
         hits.sort(key=lambda hit: -hit.pop("match"))
         return hits
 
+    def scene(self):
+        """Everything the task's world holds, as find() reports each: what a skill writer is shown."""
+        words = " ".join(e["entity_id"] for e in self._context()["entities"] if e["entity_id"] != "robot")
+        return self._find(words) if words else []
+
     def _check_abort(self):
         if self.cancel is not None and self.cancel.is_set():
             raise SkillAbort("the task was cancelled")

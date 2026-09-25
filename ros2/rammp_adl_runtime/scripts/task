@@ -6,7 +6,9 @@
     ros2 run rammp_adl_runtime task --library open_hinged_part --args '{"part": "handle"}' "open the cabinet door"
 
 With --skill or --library, the runtime looks at the scene for the words as for any task, then runs that learned
-skill (docs/design/15-learned-skills.md) in its jail instead of a plan; --dry-run moves nothing.
+skill (docs/design/15-learned-skills.md) in its jail instead of a plan; --dry-run moves nothing. With --learn, a model
+writes a skill for the words, which is rehearsed, run and verified, and kept in the library if it works
+(--rehearse-only stops before anything moves).
 
 Sends the words to /rammp/execute_task, prints the runtime's own log lines as they happen (read from
 /rosout) with its intake phases and finished plan steps, then the outcome. Ctrl-C cancels: the runtime
@@ -83,7 +85,11 @@ def run(args):
         return 2
     say(f"task: {text}")
     plan_json = ""
-    if args.skill or args.library:
+    if args.learn:
+        plan_json = json.dumps({"learned_skill": {"learn": True, "rehearse_only": args.rehearse_only,
+                                                  **({"rounds": args.rounds} if args.rounds else {})}})
+        say("learning a skill for this task"+(" (rehearsal only)" if args.rehearse_only else ""))
+    elif args.skill or args.library:
         skill = {"args": json.loads(args.args), "dry_run": args.dry_run}
         if args.skill:
             with open(args.skill) as source:
@@ -122,6 +128,13 @@ def run(args):
             f"returned {json.dumps(skill['result'])[:200]}")
         if skill.get("error"):
             print("    "+skill["error"][:800], flush=True)
+    learning = payload.get("learning")
+    if learning:
+        for entry in learning.get("rounds", ()):
+            print(f"    round {entry['round']}: {entry.get('name', '?')} -> {entry.get('stage')}"
+                  + (f": {str(entry.get('error'))[:200]}" if entry.get("error") else ""), flush=True)
+        say(f"learning: {learning['status']}" + (f", kept {learning['name']} v{learning['version']} ({learning['library_status']})"
+                                                if learning.get("version") else "") + f"; {learning.get('writer_requests', 0)} writer requests")
     home = payload.get("home")
     if home:
         say(("home: " if home.get("at_home") else "NOT home: ")+"; ".join(home.get("done") or [home.get("detail", "")]))
@@ -155,6 +168,9 @@ def main():
     parser.add_argument("--version", type=int, help="the library skill's version (default: the best one)")
     parser.add_argument("--args", default="{}", metavar="JSON", help="the skill's arguments, as a JSON object")
     parser.add_argument("--dry-run", action="store_true", help="rehearse the skill: nothing moves")
+    parser.add_argument("--learn", action="store_true", help="have a model write, rehearse, run and verify a skill for the task")
+    parser.add_argument("--rehearse-only", action="store_true", help="with --learn: stop after the rehearsal; nothing moves")
+    parser.add_argument("--rounds", type=int, help="with --learn: at most this many attempts (default from config/learning.json)")
     args = parser.parse_args(rclpy.utilities.remove_ros_args(sys.argv)[1:])
     rclpy.init()
     try:

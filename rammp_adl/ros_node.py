@@ -658,6 +658,48 @@ def create_node():
                     "simulation_only": False, "goal": goal, "skill": {**run.to_dict(), "version": version, "dry_run": dry,
                                                                       "steps": getattr(host, "steps", [])}}
 
+        async def _learn(self, runtime, task_id, task_text, goal, spec):
+            """Voyager's loop for this task: a model writes a skill, it is gated, rehearsed, run and verified; kept if so."""
+            from .learned import run_skill
+            from .learned.host import DryRunHost, ExecutorHost
+            from .learned.loop import ModelWriter, learn_skill
+            log = self.get_logger()
+            config = strict_loads((Path(runtime.catalog.root)/"config/learning.json").read_bytes())
+            library = self._skill_library()
+            writer = ModelWriter(config)
+            self._skill_cancel = asyncio.Event()
+            cancel = self._skill_cancel
+
+            async def rehearse(source):
+                self._intake_phase = "REHEARSING_SKILL"
+                return await run_skill(source, {}, DryRunHost(runtime, cancel=cancel), library=library)
+
+            async def execute(source):
+                self._intake_phase = "RUNNING_SKILL"
+                return await run_skill(source, {}, ExecutorHost(runtime, cancel=cancel, log=log.info), library=library)
+
+            async def verify(run):
+                if goal is None:
+                    return None, "no measurable goal for this task"
+                met = bool(runtime.world.goal_satisfied())
+                return met, f"the goal {json.dumps(goal['args'])} is {'measured met' if met else 'not met'}"
+            self._intake_phase = "WRITING_SKILL"
+            try:
+                story = await learn_skill(task_text, writer=writer, library=library, scene=DryRunHost(runtime).scene(),
+                                          rehearse=rehearse, execute=None if spec.get("rehearse_only") else execute,
+                                          verify=verify, max_rounds=int(spec.get("rounds") or config["max_rounds"]),
+                                          examples=int(config["examples"]), log=log.info)
+            finally:
+                self._skill_cancel = None
+            story["writer_requests"] = writer.requests
+            ok = story["status"] in ("learned", "rehearsed", "kept_unverified")
+            last = story["rounds"][-1] if story["rounds"] else {}
+            reason = (f"{story['status']}: {story.get('name')} after {len(story['rounds'])} rounds" if ok else
+                      f"no skill worked in {len(story['rounds'])} rounds; last: {last.get('stage')}: {str(last.get('error'))[:300]}")
+            return {"task_id": task_id, "status": "succeeded" if ok else "incomplete", "reason": reason[:512], "nodes": [],
+                    "task_replans": 0, "simulation_only": False, "goal": goal,
+                    "learning": {**story, "rounds": [{k: v for k, v in r.items() if k != "source"} for r in story["rounds"]]}}
+
         async def _typed_task(self, task_text, skill=None):
             """Typed task: find the target, model what moves, build the task's world, settle the goal, run."""
             from .app import astra_for
@@ -741,6 +783,9 @@ def create_node():
                     raise
                 self._install_runtime(runtime, reasoner)
                 log.info(f"task {task_id}: goal {json.dumps(goal)}; visible {visibility['visible']}")
+                if skill is not None and skill.get("learn"):
+                    outcome = await self._learn(runtime, task_id, task_text, goal, skill)
+                    return {"visible_entities": visibility["visible"], "bootstrap": bootstrap["facts"], **outcome}
                 if skill is not None:
                     outcome = await self._run_learned(runtime, task_id, goal, {**skill, "task_text": task_text})
                     return {"visible_entities": visibility["visible"], "bootstrap": bootstrap["facts"], **outcome}
@@ -1032,8 +1077,8 @@ def create_node():
                         if not isinstance(carried, dict) or not isinstance(carried.get("learned_skill"), dict):
                             raise ContractError("a typed task carries no plan; only {\"learned_skill\": {...}}")
                         skill = carried["learned_skill"]
-                        if not (skill.get("source") or skill.get("library")):
-                            raise ContractError("a learned skill needs its source or a library name")
+                        if not (skill.get("source") or skill.get("library") or skill.get("learn")):
+                            raise ContractError("a learned skill needs its source, a library name, or learn")
                     self._intake_phase = "INTAKE_STARTING"     # feedback must not show the previous task's state
                     future = self.worker.submit(self._intake_and_run(request.task_text, skill=skill))
                 deadline = time.monotonic()+self.task_timeout_s

@@ -287,6 +287,60 @@ def run(robot):
         self.assertEqual((result.status, result.error), ("aborted", "the task was cancelled"))
 
 
+@unittest.skipUnless(HAVE_JAIL, "bubblewrap and /usr/bin/python3 are needed for the jail")
+class LoopTests(unittest.TestCase):
+    """Voyager's loop: every refusal and failure goes back to the writer; only a verified skill is kept."""
+    ROOT = Path(__file__).resolve().parents[1]
+
+    def test_the_writer_learns_from_the_gate_the_rehearsal_and_keeps_the_verified_skill(self):
+        from rammp_adl.app import fixture_runtime
+        from rammp_adl.learned.host import DryRunHost, ExecutorHost
+        from rammp_adl.learned.loop import learn_skill
+        answers = [
+            "```python\n# name: open_door\nimport os\ndef run(robot):\n    \"\"\"Open.\"\"\"\n    os.system('x')\n```",
+            "```python\n# name: open_door\ndef run(robot):\n    \"\"\"Open.\"\"\"\n    robot.grasp('cabinet_handle_1')\n```",
+            "Here it is.\n```python\n# name: open_hinged_part\n"+OPEN_CABINET.strip()+"\n```"]
+
+        class Writer:
+            prompts = []
+
+            async def write(self, text):
+                Writer.prompts.append(text)
+                return answers[min(len(Writer.prompts), len(answers))-1]
+        runtime = fixture_runtime(self.ROOT/"examples/cabinet.context.json", root=self.ROOT)
+        support = {"cabinet_handle_1": "cabinet_door_1"}
+
+        async def rehearse(source):
+            return await run_skill(source, {}, DryRunHost(runtime, support_of=support))
+
+        async def execute(source):
+            return await run_skill(source, {}, ExecutorHost(runtime, support_of=support))
+
+        async def verify(run):
+            met = runtime.world.goal_satisfied()
+            return met, "the goal is measured met" if met else "the goal is not met"
+        with tempfile.TemporaryDirectory() as folder:
+            library = SkillLibrary(folder)
+            story = run(learn_skill("open the cabinet door", writer=Writer(), library=library, scene=[{"id": "cabinet_handle_1"}],
+                                    rehearse=rehearse, execute=execute, verify=verify))
+            self.assertEqual(story["status"], "learned", story)
+            self.assertEqual([r.get("stage") for r in story["rounds"]], ["gate", "rehearsal", "kept"])
+            self.assertIn("import os is not allowed", Writer.prompts[1])           # the gate's refusal went back
+            self.assertIn("In rehearsal (nothing moved)", Writer.prompts[2])       # so did the refused grasp
+            self.assertIn("robot.grasp", Writer.prompts[2])
+            self.assertEqual(library.load("open_hinged_part")["version"], 1)
+            self.assertTrue(runtime.world.goal_satisfied())
+            again = run(learn_skill("open the cabinet door", writer=Writer(), library=library, scene=[], rehearse=rehearse))
+            self.assertIn("open_hinged_part", Writer.prompts[-1])                  # the kept skill is offered next time
+
+    def test_the_writers_answer_is_read_from_its_python_block(self):
+        from rammp_adl.learned.loop import WriterError, extract_skill
+        self.assertEqual(extract_skill("x\n```python\n# name: pick_up\ndef run(robot):\n    pass\n```"),
+                         ("pick_up", "# name: pick_up\ndef run(robot):\n    pass\n"))
+        with self.assertRaises(WriterError):
+            extract_skill("no code here")
+
+
 class LibraryTests(unittest.TestCase):
     def test_versions_are_kept_promoted_by_verified_runs_retired_by_failures_and_found_by_what_they_do(self):
         with tempfile.TemporaryDirectory() as folder:

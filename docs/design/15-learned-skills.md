@@ -1,11 +1,15 @@
 # 15 Learned skills: model-written code in a sandbox
 
 Status: 2026-09-25. Implemented in [rammp_adl/learned/](../../rammp_adl/learned/): the jail, the code gate,
-the call protocol, the skill store, and the binding of the primitive API to the executor
-([host.py](../../rammp_adl/learned/host.py)): `ExecutorHost` runs each motion primitive as a one-step plan
+the call protocol, the skill store, the binding of the primitive API to the executor
+([host.py](../../rammp_adl/learned/host.py): `ExecutorHost` runs each motion primitive as a one-step plan
 through admission, the executor and the guards; `DryRunHost` moves nothing and has the validator admit the
-skill's steps as one growing chain. Tested against the fixture runtime only. Not yet built: a node entry
-point to run a skill on the robot, local perception behind `find`, the curriculum and the write-verify loop.
+skill's steps as one growing chain), the write-gate-rehearse-run-verify loop
+([loop.py](../../rammp_adl/learned/loop.py), writer model in [config/learning.json](../../config/learning.json)),
+and the node's entry points (`task --skill`, `--library`, `--learn`, `--dry-run`, `--rehearse-only`). The loop
+and the binding are tested against the fixture runtime; the writer model answered one live request with a
+skill the gate admitted. Not yet run on the robot. Not yet built: the curriculum, local perception behind
+`find`, cuRobo reach in the rehearsal.
 
 ## Why
 
@@ -105,6 +109,6 @@ the first primitives; the door work becomes the first learned skill ("open a hin
 
 - Local perception (the detector, outlines, a small vision model) behind `find` and verification, so running
   skills is fast and free.
-- A node entry point that runs a skill after intake (discovery, the task's world, the robot facts), and
-  cuRobo plan-only reachability in the dry run (today it checks admission, not reach).
+- cuRobo plan-only reachability in the rehearsal (today it checks admission, not reach).
+- The curriculum: proposing the next task from the scene and the library.
 - Which model writes skills; how the curriculum is paced; how many verified runs promote a skill.
