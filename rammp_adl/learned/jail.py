@@ -173,5 +173,8 @@ async def _run_in_jail(source, args, host, *, name, library, max_calls, timeout_
             run.stderr = (await asyncio.wait_for(stderr_task, 2.)).decode(errors="replace")[-2000:]
         except asyncio.TimeoutError:
             stderr_task.cancel()
+        transport = getattr(process, "_transport", None)   # closed here, not by a collector after the loop is gone
+        if transport is not None:
+            transport.close()
         run.duration_s = round(time.monotonic()-began, 3)
     return run

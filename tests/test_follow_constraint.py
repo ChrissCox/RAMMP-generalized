@@ -870,6 +870,39 @@ class HomingTests(BackendCase):
         self.assertIn("as seen", seen)                                          # the camera saw it sprung back
         self.assertIn("0.70", seen)
 
+    def test_a_task_does_not_start_while_another_program_can_command_the_arm(self):
+        from types import SimpleNamespace as NS
+
+        class Graph:
+            def __init__(self, publishers, actions):
+                self.publishers, self.actions = publishers, actions
+
+            def get_name(self):
+                return "rammp_adl_runtime"
+
+            def get_topic_names_and_types(self):
+                return [(topic, ["x"]) for topic in self.publishers]+[("/joint_states", ["x"])]
+
+            def get_publishers_info_by_topic(self, topic):
+                return [NS(node_name=name) for name in self.publishers.get(topic, ())]
+
+            def get_node_names_and_namespaces(self):
+                return [(name, "/") for name in self.actions]
+        client = HomingClient(joints=HOME, knuckle=0.)
+        backend, _ = self.backend(client)
+        backend.home_joints = HOME
+        backend._action_clients = lambda node, name, namespace: [(action, ["x"]) for action in node.actions[name]]
+        client.node = Graph({"/setpoint/gripper": ["rammp_adl_runtime"], "/setpoint/twist": []},
+                            {"rammp_adl_runtime": ["/execute_joint_trajectory"], "rammp_curobo": [], "kinova_gen3_node": ["/rammp_curobo/plan_to_pose"]})
+        self.assertEqual(backend.other_controllers(), [])
+        client.node = Graph({"/setpoint/gripper": ["rammp_adl_runtime", "space_teleop"], "/setpoint/twist": ["space_teleop"]},
+                            {"rammp_adl_runtime": ["/execute_joint_trajectory"], "press_demo_mission": ["/execute_joint_trajectory"]})
+        self.assertEqual(backend.other_controllers(), ["press_demo_mission", "space_teleop"])
+        with self.assertRaises(BackendFailure) as refused:
+            asyncio.run(backend.prepare_for_task())
+        self.assertIn("space_teleop", str(refused.exception))
+        self.assertEqual((client.sent, client.gripper_commands), ([], []))         # nothing moved
+
     def test_without_a_home_pose_nothing_moves(self):
         backend, _ = self.backend(HomingClient(joints=(.3, .6, -2.9, -1.4, .2, .9, .6)))
         report = asyncio.run(backend.return_home())

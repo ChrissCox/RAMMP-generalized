@@ -27,8 +27,8 @@ class PrimitiveFailed(RuntimeError):
 
 
 class _Binding:
-    def __init__(self, runtime, *, support_of=None, finder=None, cancel=None):
-        self.runtime, self.finder, self.cancel = runtime, finder, cancel
+    def __init__(self, runtime, *, support_of=None, finder=None, cancel=None, log=None):
+        self.runtime, self.finder, self.cancel, self.log = runtime, finder, cancel, log
         context = runtime.world.snapshot().context
         self.support_of = dict(support_of or {})
         for constraint in context.get("constraints", ()):
@@ -112,6 +112,8 @@ class _Binding:
             hits.append({"id": entity["entity_id"], "label": entity.get("label", ""),
                          "roles": [role for api, role in ROLES.items() if role in (entity.get("pose_roles") or ())],
                          "movable_part": any(c["entity_id"] == entity["entity_id"] for c in snapshot.context.get("constraints", ())),
+                         "moves": next(({"kind": c["kind"], "unit": c["unit"], "from": c["minimum"], "to": c["maximum"]}
+                                        for c in snapshot.context.get("constraints", ()) if c["entity_id"] == entity["entity_id"]), None),
                          "position_m": None if pose is None else [round(v, 4) for v in pose.position_m],
                          "match": len(words & have)})
         hits.sort(key=lambda hit: -hit.pop("match"))
@@ -127,6 +129,8 @@ class ExecutorHost(_Binding):
 
     async def call(self, name, args):
         self._check_abort()
+        if self.log is not None and name not in ("holding", "gripper_opening"):
+            self.log(f"skill: {name}({', '.join(f'{k}={v!r}' for k, v in args.items())})"[:200])
         if name == "find":
             return self._find(args["query"])
         if name == "holding":

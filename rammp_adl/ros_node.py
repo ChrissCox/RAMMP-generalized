@@ -179,6 +179,7 @@ def create_node():
                                   ("model_progress_check", False), ("compliant_contact", False), ("jev_decisions", True),
                                   ("home_joints_path", "artifacts/bench/start-joints.json"),
                                   ("planner_world_dir", "/home/abra/.ros/rammp_box_opening/worlds"),
+                                  ("skill_library_dir", "artifacts/skills"),
                                   ("transit_speed_scale", 0.4), ("contact_speed_scale", 0.25), ("max_evidence_age_s", 600.0), ("max_viewpoints", 6), ("wrist_rgb_topic", "/wrist_camera/color/image_raw"),
                                   ("wrist_depth_topic", "/wrist_camera/aligned_depth_to_color/image_raw"),
                                   ("wrist_rgb_info_topic", "/wrist_camera/color/camera_info"),
@@ -567,9 +568,13 @@ def create_node():
                 self.get_logger().info(f"task {task_id}: constraint {json.dumps(shown)}; proposal: {found['proposal'].get('rationale', '')[:160]}")
             return articulations
 
-        async def _intake_and_run(self, task_text):
-            """Typed task, begun and ended with the arm at home (_prepare_for_task, _finish_at_home)."""
-            outcome = await self._finish_at_home(await self._typed_task(task_text))
+        async def _intake_and_run(self, task_text, skill=None):
+            """Typed task, begun and ended with the arm at home (_prepare_for_task, _finish_at_home).
+
+            With skill (a learned skill's source or library name), intake builds the task's world as for any
+            task, and the skill runs in the jail against it instead of a plan (_run_learned).
+            """
+            outcome = await self._finish_at_home(await self._typed_task(task_text, skill=skill))
             self._held_after_task = getattr(self.runtime.backend, "holding_id", None)
             return outcome
 
@@ -606,7 +611,54 @@ def create_node():
             finally:
                 self._intake_phase = None
 
-        async def _typed_task(self, task_text):
+        def _skill_library(self):
+            from .learned import SkillLibrary
+            folder = Path(self.get_parameter("skill_library_dir").value)
+            return SkillLibrary(folder if folder.is_absolute() else Path(self.runtime.catalog.root)/folder)
+
+        async def _run_learned(self, runtime, task_id, goal, skill):
+            """Run a learned skill against the task's world: each motion call an admitted, guarded plan.
+
+            dry_run moves nothing (the validator admits the skill's steps as one chain). With a goal the task
+            could be bound to, success is the goal measured true afterwards, and a library skill's record is
+            updated with it; without one, the skill's own completion is all there is to report.
+            """
+            from .learned import run_skill
+            from .learned.host import DryRunHost, ExecutorHost
+            log = self.get_logger()
+            library = self._skill_library()
+            version = None
+            if skill.get("library"):
+                loaded = library.load(skill["library"], skill.get("version"))
+                name, source, version = skill["library"], loaded["source"], loaded["version"]
+            else:
+                name, source = skill.get("name") or "skill", skill.get("source") or ""
+            dry = bool(skill.get("dry_run"))
+            self._skill_cancel = asyncio.Event()
+            host = (DryRunHost if dry else ExecutorHost)(runtime, cancel=self._skill_cancel, log=log.info)
+            self._intake_phase = "REHEARSING_SKILL" if dry else "RUNNING_SKILL"
+            log.info(f"task {task_id}: {'rehearsing' if dry else 'running'} learned skill {name}"
+                     + (f" v{version}" if version else "")+f" with {json.dumps(skill.get('args') or {})}")
+            try:
+                run = await run_skill(source, skill.get("args") or {}, host, name=name, library=library)
+            finally:
+                self._skill_cancel = None
+            for line in run.logs:
+                log.info(f"skill {name}: {line}")
+            met = None if dry or goal is None else bool(runtime.world.goal_satisfied())
+            if version is not None and met is not None:
+                status = library.record_outcome(name, version, verified=met and run.status == "succeeded",
+                                                evidence={"task_id": task_id, "task": skill.get("task_text", ""), "run": run.status})
+                log.info(f"skill {name} v{version}: {'verified' if met else 'not verified'} by the goal; now {status}")
+            ok = run.status == "succeeded" and met is not False
+            reason = (run.error or ("the skill finished" if met is None else "the goal was measured met" if met else
+                                    "the skill finished but the goal was not met"))[:512]
+            return {"task_id": task_id, "status": "succeeded" if ok else "cancelled" if run.status == "aborted" and
+                    "cancel" in run.error else "incomplete", "reason": reason, "nodes": [], "task_replans": 0,
+                    "simulation_only": False, "goal": goal, "skill": {**run.to_dict(), "version": version, "dry_run": dry,
+                                                                      "steps": getattr(host, "steps", [])}}
+
+        async def _typed_task(self, task_text, skill=None):
             """Typed task: find the target, model what moves, build the task's world, settle the goal, run."""
             from .app import astra_for
             from .intake import (IntakeError, draft_context, new_task_id, normalize_task, search_until_visible, seed_articulation,
@@ -667,11 +719,18 @@ def create_node():
                     log.info(f"task {task_id}: poses observed for {seeded['observed']}"
                              + (f"; skipped {seeded['skipped']}" if seeded["skipped"] else ""))
                     self._intake_phase = "INTAKE_NORMALIZING_GOAL"
-                    goal = await normalize_task(reasoner, runtime.catalog, runtime.world.snapshot().context,
-                                                task_text, available_skills=runtime.registry.available_skills,
-                                                decider=runtime.executor.decider, log=log.info,
-                                                threshold=getattr(runtime.executor, "goal_threshold", .8))
-                    runtime.world.replace_goal(goal)
+                    try:
+                        goal = await normalize_task(reasoner, runtime.catalog, runtime.world.snapshot().context,
+                                                    task_text, available_skills=runtime.registry.available_skills,
+                                                    decider=runtime.executor.decider, log=log.info,
+                                                    threshold=getattr(runtime.executor, "goal_threshold", .8))
+                    except IntakeError as exc:
+                        if skill is None:
+                            raise
+                        goal = None                         # a learned skill may do what no goal predicate names
+                        log.info(f"task {task_id}: no measurable goal ({exc.status}: {exc.detail[:120]}); the skill's result stands")
+                    if goal is not None:
+                        runtime.world.replace_goal(goal)
                 except BaseException as exc:
                     # The task's runtime is abandoned: its reasoner closes and the scene answers to the standing one again.
                     await reasoner.close()
@@ -682,6 +741,9 @@ def create_node():
                     raise
                 self._install_runtime(runtime, reasoner)
                 log.info(f"task {task_id}: goal {json.dumps(goal)}; visible {visibility['visible']}")
+                if skill is not None:
+                    outcome = await self._run_learned(runtime, task_id, goal, {**skill, "task_text": task_text})
+                    return {"visible_entities": visibility["visible"], "bootstrap": bootstrap["facts"], **outcome}
                 first_plan = await self._template_plan(runtime, task_text, goal, articulations)
             finally:
                 self._intake_phase = None
@@ -903,6 +965,9 @@ def create_node():
         def cancel_goal(self, handle):
             if self._closing.is_set():
                 return CancelResponse.REJECT
+            running = getattr(self, "_skill_cancel", None)
+            if running is not None:
+                self.worker.loop.call_soon_threadsafe(running.set)
             future = self.worker.submit(self.bridge.stop("USER_CANCELLED"))
             future.add_done_callback(lambda done: done.exception() if not done.cancelled() else None)
             return CancelResponse.ACCEPT
@@ -961,10 +1026,16 @@ def create_node():
                     future = self.worker.submit(self.bridge.execute_task(task_id=request.task_id, task_text=request.task_text,
                         plan=strict_loads(request.plan_json) if request.plan_json else None))
                 else:
+                    skill = None
                     if request.plan_json:
-                        raise ContractError("a typed task cannot carry a plan; send the task text alone")
+                        carried = strict_loads(request.plan_json)
+                        if not isinstance(carried, dict) or not isinstance(carried.get("learned_skill"), dict):
+                            raise ContractError("a typed task carries no plan; only {\"learned_skill\": {...}}")
+                        skill = carried["learned_skill"]
+                        if not (skill.get("source") or skill.get("library")):
+                            raise ContractError("a learned skill needs its source or a library name")
                     self._intake_phase = "INTAKE_STARTING"     # feedback must not show the previous task's state
-                    future = self.worker.submit(self._intake_and_run(request.task_text))
+                    future = self.worker.submit(self._intake_and_run(request.task_text, skill=skill))
                 deadline = time.monotonic()+self.task_timeout_s
                 # Poll only the feedback transport. Motion dispatch remains event driven.
                 while not future.done():

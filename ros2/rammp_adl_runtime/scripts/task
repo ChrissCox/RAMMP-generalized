@@ -2,6 +2,11 @@
 """Give the running ADL runtime one task and watch it carry it out.
 
     ros2 run rammp_adl_runtime task "open the cabinet door in front of you"
+    ros2 run rammp_adl_runtime task --skill open_door.py --dry-run "open the cabinet door"
+    ros2 run rammp_adl_runtime task --library open_hinged_part --args '{"part": "handle"}' "open the cabinet door"
+
+With --skill or --library, the runtime looks at the scene for the words as for any task, then runs that learned
+skill (docs/design/15-learned-skills.md) in its jail instead of a plan; --dry-run moves nothing.
 
 Sends the words to /rammp/execute_task, prints the runtime's own log lines as they happen (read from
 /rosout) with its intake phases and finished plan steps, then the outcome. Ctrl-C cancels: the runtime
@@ -77,7 +82,17 @@ def run(args):
               file=sys.stderr)
         return 2
     say(f"task: {text}")
-    sent = action.send_goal_async(ExecuteTask.Goal(task_id="", task_text=text, plan_json=""), feedback_callback=on_feedback)
+    plan_json = ""
+    if args.skill or args.library:
+        skill = {"args": json.loads(args.args), "dry_run": args.dry_run}
+        if args.skill:
+            with open(args.skill) as source:
+                skill.update(source=source.read(), name=os.path.splitext(os.path.basename(args.skill))[0])
+        else:
+            skill.update(library=args.library, **({"version": args.version} if args.version else {}))
+        plan_json = json.dumps({"learned_skill": skill})
+        say(f"learned skill: {skill.get('name') or skill.get('library')}{' (dry run)' if args.dry_run else ''}")
+    sent = action.send_goal_async(ExecuteTask.Goal(task_id="", task_text=text, plan_json=plan_json), feedback_callback=on_feedback)
     try:
         wait(sent)
         handle = sent.result()
@@ -101,6 +116,15 @@ def run(args):
         print(f"    {step['node_id']} {step['status']}{failure}{detail}", flush=True)
     if payload.get("task_replans"):
         say(f"replans: {payload['task_replans']}")
+    skill = payload.get("skill")
+    if skill:
+        say(f"skill {skill['name']}: {skill['status']} after {len(skill['calls'])} calls in {skill['duration_s']:.1f} s; "
+            f"returned {json.dumps(skill['result'])[:200]}")
+        if skill.get("error"):
+            print("    "+skill["error"][:800], flush=True)
+    home = payload.get("home")
+    if home:
+        say(("home: " if home.get("at_home") else "NOT home: ")+"; ".join(home.get("done") or [home.get("detail", "")]))
     return 0 if status == "succeeded" else 1
 
 
@@ -126,6 +150,11 @@ def main():
                                      description="Give the running ADL runtime one task and watch it carry it out.")
     parser.add_argument("words", nargs="+", help='the task in words, e.g. "open the cabinet door in front of you"')
     parser.add_argument("--wait", type=float, default=10., metavar="S", help="seconds to wait for the runtime (10)")
+    parser.add_argument("--skill", metavar="FILE", help="run this learned skill (Python, run(robot, **args)) instead of a plan")
+    parser.add_argument("--library", metavar="NAME", help="run this skill from the runtime's skill library")
+    parser.add_argument("--version", type=int, help="the library skill's version (default: the best one)")
+    parser.add_argument("--args", default="{}", metavar="JSON", help="the skill's arguments, as a JSON object")
+    parser.add_argument("--dry-run", action="store_true", help="rehearse the skill: nothing moves")
     args = parser.parse_args(rclpy.utilities.remove_ros_args(sys.argv)[1:])
     rclpy.init()
     try:

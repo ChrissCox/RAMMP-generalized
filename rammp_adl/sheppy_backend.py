@@ -749,6 +749,34 @@ class SheppyArmBackend:
             raise BackendFailure("release_incomplete", f"the gripper did not open ({why}): {opened['message']}")
         self.holding_id, self.grasp_knuckle = None, None
 
+    #: The driver's motion actions; a client of any of them in another node can move the arm.
+    DRIVER_ACTIONS = ("/execute_joint_trajectory", "/go_to_ee_pose", "/go_to_joint_config", "/go_to_preset")
+
+    def other_controllers(self):
+        """Other nodes that can command the arm now: publishers on the driver's /setpoint/ topics, clients of its actions."""
+        node = getattr(self.client, "node", None)
+        if node is None:
+            return []
+        own, found = node.get_name(), set()
+        for topic, _ in node.get_topic_names_and_types():
+            if topic.startswith("/setpoint/"):
+                found.update(info.node_name for info in node.get_publishers_info_by_topic(topic) if info.node_name != own)
+        for name, namespace in node.get_node_names_and_namespaces():
+            if name == own or name.startswith("_ros2cli"):
+                continue
+            try:
+                clients = self._action_clients(node, name, namespace)
+            except Exception:                               # noqa: BLE001 - a node that left while we looked
+                continue
+            if any(action in self.DRIVER_ACTIONS for action, _ in clients):
+                found.add(name)
+        return sorted(found)
+
+    @staticmethod
+    def _action_clients(node, name, namespace):
+        from rclpy.action import get_action_client_names_and_types_by_node
+        return get_action_client_names_and_types_by_node(node, name, namespace)
+
     async def prepare_for_task(self, *, keep_grip=False, measure_gripper=False):
         """First of all in a task: the arm at the exact home joints, the hand open.
 
@@ -761,6 +789,10 @@ class SheppyArmBackend:
         """
         if self.home_joints is None:
             return {"at_home": False, "done": [], "detail": "no home pose is configured", "moved": False, "measured_stop_rad": None}
+        others = self.other_controllers()
+        if others:
+            raise BackendFailure("safety_fault", f"another program can command the arm ({', '.join(others)}); "
+                                                 f"stop it before a task: two controllers must never share the arm")
         context = self._task_context("prepare")
         await self._own("prepare", context)
         done, moved, measured = [], False, None

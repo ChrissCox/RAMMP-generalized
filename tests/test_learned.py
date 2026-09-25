@@ -264,6 +264,18 @@ def run(robot):
             source = f'def run(robot):\n    """Try something out of bounds."""\n    {bad}\n'
             self.assertEqual(run(run_skill(source, {}, self.host(runtime, "dry"))).status, "failed", bad)
 
+    def test_the_seed_skill_opens_the_part_as_far_as_it_goes(self):
+        runtime = self.runtime()
+        source = (self.ROOT/"skills/learned_seeds/open_by_handle.py").read_text()
+        check_source(source)
+        dry = self.host(runtime, "dry")
+        self.assertEqual(run(run_skill(source, {}, dry)).status, "succeeded")
+        self.assertEqual(dry.steps[4]["args"]["target_value"], 1.3)                # the cabinet's hinge goes to 1.3 rad
+        result = run(run_skill(source, {"amount": 1.0}, self.host(runtime)))
+        self.assertEqual((result.status, result.result), ("succeeded", {"part": "cabinet_handle_1", "moved_to": 1.0, "unit": "rad"}),
+                         result.to_dict())
+        self.assertTrue(runtime.world.goal_satisfied())
+
     def test_a_cancel_ends_the_skill_before_its_next_step(self):
         import asyncio as aio
 
