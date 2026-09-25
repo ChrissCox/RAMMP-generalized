@@ -27,6 +27,7 @@ class CloudExecutorTests(unittest.IsolatedAsyncioTestCase):
                 return {"status": "completed", "model": "gpt-6-astra", "output": [
                     {"type": "message", "content": [{"type": "output_text", "text": json.dumps({
                         "result": {"status": "OK", "plan": plan}})}]}]}
+        runtime.executor.recovery_order = ("ask_planner",)          # this test is about the planner's replans
         reasoner = astra_for(runtime, transport=Transport())
         result = await runtime.executor.run_task("Open the cabinet door", reasoner)
         self.assertEqual(result.status, "succeeded", result.to_dict())

@@ -168,7 +168,7 @@ def create_node():
         def __init__(self):
             super().__init__("rammp_adl_runtime")
             for name, default in (("project_root", ""), ("context_path", ""), ("enable_astra", False),
-                                  ("time_scale", 0.02), ("task_timeout_s", 300.0), ("hardware_motion_enabled", False),
+                                  ("time_scale", 0.02), ("task_timeout_s", 900.0), ("hardware_motion_enabled", False),
                                   ("backend", "fixture"), ("commissioned", False), ("arm_motion", False),
                                   ("capabilities", ""), ("imagery_policy_path", "config/imagery-locality.json"),
                                   ("sphere_bundle_dir", "artifacts/jetson/real-world-ready/assembly/bundle-2"),
@@ -176,6 +176,7 @@ def create_node():
                                   ("face_model_path", "artifacts/models/face_detection_yunet_2023mar.onnx"),
                                   ("keyframe_min_interval_s", 3.0), ("record_dir", "artifacts/bench"), ("scene_refresh", False), ("scene_refresh_interval_s", 30.0),
                                   ("model_progress_check", False), ("compliant_contact", False), ("jev_decisions", True),
+                                  ("home_joints_path", "artifacts/bench/start-joints.json"),
                                   ("transit_speed_scale", 0.4), ("contact_speed_scale", 0.25), ("max_evidence_age_s", 600.0), ("max_viewpoints", 6), ("wrist_rgb_topic", "/wrist_camera/color/image_raw"),
                                   ("wrist_depth_topic", "/wrist_camera/aligned_depth_to_color/image_raw"),
                                   ("wrist_rgb_info_topic", "/wrist_camera/color/camera_info"),
@@ -358,7 +359,7 @@ def create_node():
                     except Exception as exc:            # noqa: BLE001 - reported, egress withheld
                         self.get_logger().warning(f"face screen unavailable ({exc}); no keyframe will leave the machine")
                     self.scene = GroundedScene(client=self.client, chain=chain, calibration_id=base_context["calibration_id"],
-                                               face_screen=screen, pose_validity_s=120.,
+                                               face_screen=screen, pose_validity_s=600.,
                                                dump_dir=root/"artifacts/keyframes",
                                                selector=KeyframeSelector(min_interval_s=float(self.get_parameter("keyframe_min_interval_s").value)))
                     record_dir = self.get_parameter("record_dir").value
@@ -388,6 +389,16 @@ def create_node():
                                         speed_scales={"transit": transit, "contact": contact},
                                         max_evidence_age_s=float(self.get_parameter("max_evidence_age_s").value))
             self._base_context_path = context_path
+            # Every task ends here: the bench's recorded start pose, unless the operator names another.
+            self._home_joints = None
+            home_path = Path(self.get_parameter("home_joints_path").value) if self.get_parameter("home_joints_path").value else None
+            if home_path is not None:
+                home_path = home_path if home_path.is_absolute() else root/home_path
+                try:
+                    self._home_joints = [float(v) for v in strict_loads(home_path.read_bytes())["position_rad"]]
+                    self.get_logger().info(f"tasks end at the home pose in {home_path}: {[round(v, 3) for v in self._home_joints]}")
+                except (OSError, ValueError, KeyError, TypeError) as exc:
+                    self.get_logger().warning(f"no home pose ({exc}); tasks end wherever they stop")
             runtime = self._compose_runtime(context_path)
             for name, why in sorted(runtime.backend.declared_gaps.items()):
                 self.get_logger().warning(f"declared capability {name} is a known gap: {why}")
@@ -405,6 +416,7 @@ def create_node():
             runtime.backend.log = self.get_logger().info
             runtime.backend.model_progress_check = bool(self.get_parameter("model_progress_check").value)
             runtime.backend.compliant_pull = bool(self.get_parameter("compliant_contact").value)
+            runtime.backend.home_joints = getattr(self, "_home_joints", None)
             runtime.executor.decider, runtime.executor.stop_threshold = self._jev_decider(runtime)
             if self.get_parameter("record_dir").value:
                 record_dir = Path(self.get_parameter("record_dir").value)
@@ -546,6 +558,20 @@ def create_node():
             return articulations
 
         async def _intake_and_run(self, task_text):
+            """Typed task, ended with the arm at home (see _finish_at_home)."""
+            return await self._finish_at_home(await self._typed_task(task_text))
+
+        async def _finish_at_home(self, outcome):
+            """The typed task's end: the arm home (ros_bridge.finish_at_home), shown as RETURNING_HOME."""
+            from .ros_bridge import finish_at_home
+            self._intake_phase = "RETURNING_HOME"
+            try:
+                return await finish_at_home(outcome, backend=self.runtime.backend, safety=self.runtime.executor.safety,
+                                            closing=self._closing.is_set(), log=self.get_logger().info)
+            finally:
+                self._intake_phase = None
+
+        async def _typed_task(self, task_text):
             """Typed task: find the target, model what moves, build the task's world, settle the goal, run."""
             from .app import astra_for
             from .intake import (IntakeError, draft_context, new_task_id, normalize_task, search_until_visible, seed_articulation,

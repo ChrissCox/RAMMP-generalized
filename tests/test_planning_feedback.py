@@ -161,7 +161,7 @@ class PlanningFeedbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.task_replans, 1)
         self.assertEqual(len(requests), 2)
         self.assertEqual(len(rejections), 2)
-        self.assertIn("replan budget exhausted", result.reason.lower())
+        self.assertIn("every way on was tried: ask_planner", result.reason)
         self.assertIn(rejections[-1], result.reason)
         self.assertEqual(requests[-1]["feedback"]["previous_attempt"]["reason"], rejections[0][:512])
         self.assertEqual(runtime.backend.events, [])
@@ -177,6 +177,7 @@ class PlanningFeedbackTests(unittest.IsolatedAsyncioTestCase):
                 requests.append(content)
                 return provider_response(bind_request(plans.pop(0), content["world_context"]))
 
+        runtime.executor.recovery_order = ("ask_planner",)          # this test is about the planner's replans
         result = await runtime.executor.run_task("Open the cabinet door", astra_for(runtime, transport=Transport()))
         self.assertEqual(result.status, "succeeded", result.to_dict())
         self.assertEqual(len(requests), 3)

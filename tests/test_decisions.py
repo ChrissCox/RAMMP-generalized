@@ -138,16 +138,16 @@ class AfterFailureTests(unittest.IsolatedAsyncioTestCase):
                 return SimpleNamespace(status="OK", plan=plan, detail="explicit test response")
         return Reasoner
 
-    async def test_a_confident_stop_ends_the_task_without_paying_for_a_replan(self):
+    async def test_stopping_is_not_on_the_menu_the_task_goes_on_while_a_way_on_is_left(self):
         runtime = self.runtime(failures={"c6": ["model_mismatch"]})
-        runtime.executor.decider, _ = decider({"recovery": ("stop", .95)})
+        runtime.executor.decider, transport = decider({"recovery": ("stop", .95)})
         Reasoner = self.planner([load("cabinet-reobserve"), load("cabinet-resume")])
         result = await runtime.executor.run_task("Open the cabinet", Reasoner(), initial_plan=load("cabinet"))
-        self.assertEqual(result.status, "incomplete")
-        self.assertIn("stopped without a replan", result.reason)
-        self.assertEqual(Reasoner.calls, 0)
-        decisions = [e for e in runtime.trace.events if e["event"] == "fast_decision"]
-        self.assertEqual((decisions[0]["choice"], decisions[0]["confidence"]), ("stop", .95))
+        self.assertEqual(result.status, "succeeded", result.to_dict())
+        self.assertNotIn("stop", transport.seen[0]["questions"]["recovery"]["criteria"])
+        self.assertEqual(Reasoner.calls, 0)                                        # an answer off the menu: the cheapest way on
+        recovered = [e for e in runtime.trace.events if e["event"] == "local_recovery"]
+        self.assertEqual(recovered[0]["choice"], "retry_from_failed")
 
     async def test_a_confident_local_retry_recovers_without_the_planner(self):
         runtime = self.runtime(failures={"c6": ["model_mismatch"]})
@@ -157,18 +157,34 @@ class AfterFailureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, "succeeded", result.to_dict())
         self.assertEqual(Reasoner.calls, 0)                                        # no planner request at all
         menu = transport.seen[0]["questions"]["recovery"]["criteria"]
-        self.assertEqual(set(menu), {"retry_from_failed", "ask_planner", "stop"})  # a follow failure: no look-again offer
+        self.assertEqual(set(menu), {"retry_from_failed", "ask_planner"})        # a follow failure: no look-again offer
         recovered = [e for e in runtime.trace.events if e["event"] == "local_recovery"][0]
         self.assertEqual(recovered["nodes"], ["retry_c6", "retry_c7", "retry_c8"])
 
-    async def test_asking_the_planner_or_doubt_recovers_exactly_as_without_it(self):
-        for answer in (("ask_planner", .9), ("retry_from_failed", .6), ("stop", .6)):
+    async def test_asking_the_planner_takes_its_plans_and_doubt_takes_the_cheapest_way_on(self):
+        for answer, calls in ((("ask_planner", .9), 2), (("retry_from_failed", .6), 0), (("ask_planner", .6), 0)):
             runtime = self.runtime(failures={"c6": ["model_mismatch"]})
             runtime.executor.decider, _ = decider({"recovery": answer})
             Reasoner = self.planner([load("cabinet-reobserve"), load("cabinet-resume")])
             result = await runtime.executor.run_task("Open the cabinet", Reasoner(), initial_plan=load("cabinet"))
             self.assertEqual(result.status, "succeeded", result.to_dict())
-            self.assertEqual(Reasoner.calls, 2)
+            self.assertEqual(Reasoner.calls, calls, answer)
+
+    async def test_a_planner_that_declines_leaves_the_local_ways_on_to_try(self):
+        runtime = self.runtime(failures={"c6": ["model_mismatch"]})
+        runtime.executor.decider, transport = decider({"recovery": ("ask_planner", .95)})
+
+        class Declining:
+            calls = 0
+
+            async def generate_plan(self, context, **kwargs):
+                Declining.calls += 1
+                return SimpleNamespace(status="NEED_CAPABILITY", plan=None, detail="available skills cannot revise the model")
+        result = await runtime.executor.run_task("Open the cabinet", Declining(), initial_plan=load("cabinet"))
+        self.assertEqual(result.status, "succeeded", result.to_dict())            # the retry after the decline opened it
+        self.assertEqual(Declining.calls, 1)
+        self.assertTrue([e for e in runtime.trace.events if e["event"] == "planner_declined"])
+        self.assertEqual([e["choice"] for e in runtime.trace.events if e["event"] == "local_recovery"], ["retry_from_failed"])
 
 
 class ConstraintAndPlanTests(unittest.IsolatedAsyncioTestCase):

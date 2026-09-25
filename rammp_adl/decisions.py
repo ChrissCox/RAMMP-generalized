@@ -332,13 +332,15 @@ async def decide_plan_variants(decider, task_text, goal_text, *, threshold):
     return variants, answers
 
 
-async def decide_recovery(decider, *, task_text, skill, failure_code, detail, attempt, options, threshold):
-    """Which recovery to run after a failed step, among local ones and Astra; (key or None, Decision)."""
-    menu = {**options, "ask_planner": "none of these fits: ask the planner for a new plan",
-            "stop": STOP_OPTIONS["stop"]}
+async def decide_recovery(decider, *, task_text, skill, failure_code, detail, attempt, options, threshold, tried=()):
+    """Which way on to take after a failed step, among those not yet tried; (key or None, Decision).
+
+    The options are the caller's whole menu (local recoveries and, while the planner may still be asked,
+    asking it); stopping is not one of them: the task goes on while a way on is left.
+    """
     state = (f"Request to a robot arm: {task_text.strip()}\nAttempt {attempt+1} failed at the step {skill}: "
-             f"{failure_code}. {detail[:400]}")
-    decision = await decider.choose(state, question="recovery", instructions="What should the robot do next?", options=menu)
+             f"{failure_code}. {detail[:400]}" + (f"\nAlready tried after this failure: {', '.join(tried)}." if tried else ""))
+    decision = await decider.choose(state, question="recovery", instructions="What should the robot try next?", options=options)
     if decision.choice is None or decision.confidence < threshold:
         return None, decision
     return decision.choice, decision

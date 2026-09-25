@@ -4,7 +4,8 @@ import unittest
 
 import numpy as np
 
-from rammp_adl.motion.articulation import ArticulationError, fit_articulation, fit_hinge, fit_slide
+from rammp_adl.constraints import rotation_about
+from rammp_adl.motion.articulation import ArticulationError, fit_articulation, fit_hinge, fit_slide, hinge_from_faces
 
 AXIS = np.array([.015, -.006, 1.])
 AXIS /= np.linalg.norm(AXIS)
@@ -79,6 +80,27 @@ class SlideAndChoiceTests(unittest.TestCase):
             fit_hinge(arc(.3, count=2), axis=AXIS, prior_pivot=PIVOT)
         with self.assertRaises(ArticulationError):
             fit_slide(np.zeros((2, 3)))
+
+
+
+class FacesTests(unittest.TestCase):
+    def test_two_views_of_a_turning_face_give_the_axis_one_view_cannot(self):
+        face = np.array([-.9, -.44, 0.])
+        face /= np.linalg.norm(face)
+        placed = np.array([0., 0., 1.])                                       # vertical in the face: all one view gives
+        leaned = rotation_about(face, math.radians(1.85)) @ placed            # the cabinet leans sideways
+        turned = rotation_about(leaned, -.49) @ face
+        fit, why = hinge_from_faces(face, turned, prior_axis=placed)
+        self.assertEqual(why, "")
+        np.testing.assert_allclose(fit["axis"], leaned, atol=1e-9)
+        self.assertAlmostEqual(fit["turned"], .49, places=9)
+        self.assertAlmostEqual(fit["axis_change_deg"], 1.85, places=6)
+        fit, why = hinge_from_faces(face, rotation_about(leaned, -.05) @ face, prior_axis=placed)
+        self.assertIsNone(fit)
+        self.assertIn("too little", why)
+        fit, why = hinge_from_faces(face, rotation_about(np.array([0., 1., 0.]), .5) @ face, prior_axis=placed)
+        self.assertIsNone(fit)                                                # a floor seen, not the door turned
+        self.assertIn("not the same panel", why)
 
 
 if __name__ == "__main__":

@@ -458,12 +458,22 @@ class DagExecutor:
             finally:
                 self._task_owner = None
 
+    #: Plans run after a failure, local recoveries and the planner's replans together; the planner's share
+    #: stays within the reasoning policy's max_task_replans.
+    max_recovery_rounds = 6
+    #: The ways on after a failure, cheapest first: the order when Jev is unsure or absent.
+    recovery_order = ("retry_from_failed", "look_again_then_retry", "ask_planner")
+
     async def _run_task_owned(self, task_text, reasoner, *, initial_plan, max_replans):
+        # A failed step is followed by another way on, never by giving up while one is left. The ways on after
+        # one kind of failure (retry from the failed step, look again first, a new plan from the planner) are
+        # each tried once; Jev picks among those left; a planner that declines leaves the others still to try.
         history = []
-        feedback = repeated = None
+        feedback = failure = result = None
         plan = initial_plan
         task_id = self.world.snapshot().context["task_id"]
-        for replans in range(max_replans + 1):
+        tried, replans = {}, 0
+        for rounds in range(self.max_recovery_rounds + 1):
             if self._user_cancelled:
                 return self._result(task_id, "cancelled", history, self._user_cancel_reason, replans)
             if self.safety.fault_latched:
@@ -473,20 +483,20 @@ class DagExecutor:
                 await self.safety.reset()
             self._cancel.clear()
             if plan is None:
-                self.trace.emit("wait_started", wait_id=f"reasoning:{replans}", reason="cloud_reasoning")
+                self.trace.emit("wait_started", wait_id=f"reasoning:{rounds}", reason="cloud_reasoning")
                 provider = None
                 cancelled = None
                 reasoning_epoch = self.world.snapshot().execution_epoch
                 try:
                     images = ()
                     supplier = getattr(self, "replan_images", None)
-                    if callable(supplier) and (replans > 0 or feedback is not None):
+                    if callable(supplier) and (rounds > 0 or feedback is not None):
                         try:
                             images = tuple(supplier() or ())
                         except Exception as exc:                # noqa: BLE001 - a replan without a picture still runs
                             self.trace.emit("replan_images_unavailable", detail=str(exc)[:200])
                     provider = asyncio.create_task(reasoner.generate_plan(self.world.snapshot().context, task_text=task_text,
-                                                                          feedback=feedback, replan=replans > 0,
+                                                                          feedback=feedback, replan=rounds > 0,
                                                                           images=images))
                     cancelled = asyncio.create_task(self._cancel.wait())
                     done, _ = await asyncio.wait({provider, cancelled}, timeout=self._reasoning_deadline_s,
@@ -512,9 +522,18 @@ class DagExecutor:
                         cancelled.cancel()
                     if provider is not None and not provider.done():
                         provider.cancel()
-                    self.trace.emit("wait_ended", wait_id=f"reasoning:{replans}")
+                    self.trace.emit("wait_ended", wait_id=f"reasoning:{rounds}")
                 if response.status != "OK":
-                    return self._result(task_id, "incomplete", history, response.status + ": " + response.detail, replans)
+                    declined = response.status + ": " + response.detail
+                    if failure is None:                     # no plan yet: nothing failed that another way could fix
+                        return self._result(task_id, "incomplete", history, declined, replans)
+                    self.trace.emit("planner_declined", detail=declined[:200])
+                    key, plan = await self._next_recovery(task_text, failure, tried, can_replan=False)
+                    if key is None:
+                        return self._result(task_id, "incomplete", history,
+                                          (f"{failure['summary']}; the planner declined ({declined}) and every other way on "
+                                           f"was tried: {', '.join(sorted(tried[failure['signature']]))}")[:512], replans)
+                    continue
                 plan = response.plan
             result = await self.run_plan(plan)
             history.extend(result.nodes)
@@ -524,64 +543,78 @@ class DagExecutor:
             if self._user_cancelled:
                 return self._result(task_id, "cancelled", history, self._user_cancel_reason, replans)
             failed = [node for node in result.nodes if node.status == "failed"]
-            if failed:
-                last = failed[-1]
-                plan_node = next((node for node in plan["nodes"] if node["id"] == last.node_id), None)
-                failure = (next((policy for policy in self.catalog.skills[plan_node["skill"]]["failures"]
-                                 if policy["code"] == last.failure_code), None) if plan_node else None)
-                if failure is None or failure["escalation"] == "handoff":
+            last = failed[-1] if failed else None
+            plan_node = next((node for node in plan["nodes"] if node["id"] == last.node_id), None) if last else None
+            if last is not None:
+                policy = (next((policy for policy in self.catalog.skills[plan_node["skill"]]["failures"]
+                                if policy["code"] == last.failure_code), None) if plan_node else None)
+                if policy is None or policy["escalation"] == "handoff":
                     return self._result(task_id, "incomplete", history,
                                       last.failure_code + ": " + (last.detail or "Handler policy requires handback"), replans)
-            if failed:
-                # One retry per failing idea: the same skill failing the same way
-                # twice is a fact about the world or the stack, not bad luck.
-                signature = (plan_node["skill"] if plan_node else None, last.failure_code, last.detail)
-                if signature == repeated:
-                    return self._result(task_id, "incomplete", history,
-                                      f"{last.failure_code} repeated after a replan: {last.detail}"[:512], replans)
-                repeated = signature
-            # Before a new plan is paid for: Jev scores the local ways on (retry from the failed step, look again
-            # first), asking the planner, and stopping, all at once. A confident local choice runs if it is admitted.
-            recovery = None
-            decider = getattr(self, "decider", None)
-            if failed and decider is not None and getattr(decider, "available", False) and replans < max_replans:
-                from .decisions import decide_recovery
-                from .plans import recovery_plans
-                offers = recovery_plans(plan, last.node_id, self.world.snapshot().context, self.catalog)
-                choice, decision = await decide_recovery(
-                    decider, task_text=task_text, skill=plan_node["skill"] if plan_node else "unknown",
-                    failure_code=last.failure_code, detail=last.detail or "", attempt=replans,
-                    options={key: text for key, (text, _) in offers.items()},
-                    threshold=getattr(self, "recovery_threshold", .8))
-                self.trace.emit("fast_decision", question="recovery", choice=decision.choice,
-                                confidence=round(decision.confidence, 3), latency_s=round(decision.latency_s, 3),
-                                error=decision.error)
-                if choice == "stop" and decision.confidence >= getattr(self, "stop_threshold", .85):
-                    return self._result(task_id, "incomplete", history,
-                                      (f"{last.failure_code}: {last.detail} (stopped without a replan: jev "
-                                       f"{decision.confidence:.2f} that no new plan can help)")[:512], replans)
-                if choice in offers:
-                    recovery = (choice, plan, last.node_id)
+            skill = plan_node["skill"] if plan_node else None
+            code = last.failure_code if last else result.status
+            failure = {"signature": (skill, code), "plan": plan, "node_id": last.node_id if last else None, "skill": skill,
+                       "code": code, "detail": (last.detail if last else result.reason) or "", "attempt": rounds,
+                       "summary": f"{code}: {(last.detail if last else result.reason) or ''}"[:400]}
             feedback = {"previous_attempt": {"status": result.status, "reason": result.reason[:512],
-                        "last_failed_node": ({"node_id": last.node_id, "skill": plan_node["skill"] if plan_node else None,
+                        "last_failed_node": ({"node_id": last.node_id, "skill": skill,
                                               "failure_code": last.failure_code, "detail": last.detail[:512]}
-                                             if failed else None)}}
+                                             if last else None)}}
             # Give each new symbolic attempt a fresh command epoch. run_plan has
             # already invalidated and reconciled failed attempts.
             if self.world.snapshot().execution_epoch == plan["execution_epoch"]:
                 old = plan["execution_epoch"]
                 self.world.cancel_epoch()
                 self.world.seal_epoch(old)
-            plan = None
-            if recovery is not None:
-                from .plans import recovery_plans
-                key, failed_plan, failed_node = recovery
-                candidate = recovery_plans(failed_plan, failed_node, self.world.snapshot().context, self.catalog)[key][1]
-                try:
-                    await asyncio.to_thread(self.validator.admit, candidate)
-                    plan = candidate
-                    self.trace.emit("local_recovery", choice=key, nodes=[node["id"] for node in candidate["nodes"]])
-                except ContractError as exc:
-                    self.trace.emit("local_recovery_rejected", choice=key, detail=str(exc)[:200])
+            key, plan = await self._next_recovery(task_text, failure, tried, can_replan=replans < max_replans)
+            if key is None:
+                return self._result(task_id, "incomplete", history,
+                                  (f"{failure['summary']}; every way on was tried: "
+                                   f"{', '.join(sorted(tried[failure['signature']]))}")[:512], replans)
+            if key == "ask_planner":
+                replans += 1
         return self._result(task_id, "incomplete", history,
-                          "Task replan budget exhausted; last attempt: " + result.reason[:512], max_replans)
+                          (f"no success after {self.max_recovery_rounds} recoveries; last attempt: "
+                           + (result.reason if result else ""))[:512], replans)
+
+    async def _next_recovery(self, task_text, failure, tried, *, can_replan):
+        """The next way on after a failure, admitted: (key, plan); ("ask_planner", None) asks the planner, (None, None) is none left."""
+        from .plans import recovery_plans
+        used = tried.setdefault(failure["signature"], set())
+        while True:
+            offers = {} if failure["node_id"] is None else {
+                key: offer for key, offer in recovery_plans(failure["plan"], failure["node_id"], self.world.snapshot().context,
+                                                            self.catalog).items() if key not in used}
+            menu = {key: text for key, (text, _) in offers.items()}
+            if can_replan and "ask_planner" not in used:
+                menu["ask_planner"] = "none of these fits: ask the planner for a new plan"
+            if not menu:
+                return None, None
+            key = await self._pick_recovery(task_text, failure, menu, used)
+            used.add(key)
+            if key == "ask_planner":
+                return key, None
+            candidate = offers[key][1]
+            try:
+                await asyncio.to_thread(self.validator.admit, candidate)
+            except ContractError as exc:
+                self.trace.emit("local_recovery_rejected", choice=key, detail=str(exc)[:200])
+                continue
+            self.trace.emit("local_recovery", choice=key, nodes=[node["id"] for node in candidate["nodes"]])
+            return key, candidate
+
+    async def _pick_recovery(self, task_text, failure, menu, used):
+        """Jev's pick among the ways on left, all scored at once; the cheapest first when it is unsure."""
+        decider = getattr(self, "decider", None)
+        if decider is not None and getattr(decider, "available", False) and len(menu) > 1:
+            from .decisions import decide_recovery
+            choice, decision = await decide_recovery(
+                decider, task_text=task_text, skill=failure["skill"] or "unknown", failure_code=failure["code"],
+                detail=failure["detail"], attempt=failure["attempt"], options=menu, tried=sorted(used),
+                threshold=getattr(self, "recovery_threshold", .8))
+            self.trace.emit("fast_decision", question="recovery", choice=decision.choice,
+                            confidence=round(decision.confidence, 3), latency_s=round(decision.latency_s, 3),
+                            error=decision.error)
+            if choice in menu:
+                return choice
+        return next((key for key in self.recovery_order if key in menu), next(iter(menu)))

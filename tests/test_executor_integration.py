@@ -86,9 +86,9 @@ class ExecutorIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, "succeeded", result.to_dict())
         self.assertTrue(runtime.world.goal_satisfied())
 
-    async def test_the_same_failure_twice_ends_the_task_instead_of_spending_the_replan_budget(self):
-        # The door model is wrong every time it is followed: c6 in the first plan, r2 in each resume.
-        runtime = self.runtime(failures={"c6": ["model_mismatch"], "r2": ["model_mismatch"]*3})
+    async def test_a_failure_that_returns_whatever_is_tried_ends_the_task_once_every_way_on_was_tried(self):
+        # The door model is wrong every time it is followed: c6, its local retry, and the planner's resume.
+        runtime = self.runtime(failures={"c6": ["model_mismatch"], "retry_c6": ["model_mismatch"], "r2": ["model_mismatch"]*3})
         plans = [load("cabinet-reobserve"), load("cabinet-resume"), load("cabinet-resume")]
         class FixtureReasoner:
             async def generate_plan(self, context, **kwargs):
@@ -98,8 +98,13 @@ class ExecutorIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 return SimpleNamespace(status="OK", plan=plan, detail="explicit test response")
         result = await runtime.executor.run_task("Open the cabinet", FixtureReasoner(), initial_plan=load("cabinet"))
         self.assertEqual(result.status, "incomplete", result.to_dict())
-        self.assertIn("model_mismatch repeated after a replan", result.reason)
-        self.assertEqual(len(plans), 1)                                          # the third resume was never asked for
+        # c6 fails; the local retry fails the same way; the planner looks again, then resumes, and r2 fails the same way:
+        # both ways on for that failure were used, so the task ends and says so, without asking for the third plan.
+        self.assertIn("every way on was tried: ask_planner, retry_from_failed", result.reason)
+        self.assertEqual([n.node_id for n in result.nodes if n.status == "failed"], ["c6", "retry_c6", "r2"])
+        self.assertEqual(len(plans), 1)
+        recovered = [e["choice"] for e in runtime.trace.events if e["event"] == "local_recovery"]
+        self.assertEqual(recovered, ["retry_from_failed"])
 
     async def test_recovery_keeps_original_goal_across_observation_phase(self):
         runtime = self.runtime(failures={"c6": ["model_mismatch"]})
@@ -110,6 +115,7 @@ class ExecutorIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 for key in ("task_id", "snapshot_id", "execution_epoch"):
                     plan[key] = context[key]
                 return SimpleNamespace(status="OK", plan=plan, detail="explicit test response")
+        runtime.executor.recovery_order = ("ask_planner",)          # this test is about the planner's replans
         result = await runtime.executor.run_task("Open the cabinet", FixtureReasoner(), initial_plan=load("cabinet"))
         self.assertEqual(result.status, "succeeded", result.to_dict())
         self.assertEqual(result.task_replans, 2)

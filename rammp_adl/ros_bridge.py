@@ -6,6 +6,39 @@ import asyncio
 from .contracts import ContractError, checked_copy, digest
 
 
+async def finish_at_home(outcome, *, backend, safety, closing=False, log=None):
+    """A task ends with the arm at home: after success, after every way on was tried, after a declined intake.
+
+    Not after the operator cancelled it, with a fault latched or while the node closes: then the arm stays
+    where the stop left it. A task whose goal was met but whose arm could not get home is reported incomplete,
+    with the reason. The outcome dict gains "home": what was done, or why nothing was.
+    """
+    if getattr(backend, "home_joints", None) is None or not hasattr(backend, "return_home"):
+        return outcome
+    if outcome.get("status") == "cancelled" or safety.fault_latched or closing:
+        why = ("the task was cancelled" if outcome.get("status") == "cancelled" else
+               "a fault is latched" if safety.fault_latched else "the node is closing")
+        outcome["home"] = {"at_home": False, "done": [], "detail": "not moved: "+why}
+        return outcome
+    try:
+        if safety.stop_requested.is_set():
+            await safety.reset()
+        home = await backend.return_home()
+    except Exception as exc:                                # noqa: BLE001 - reported with the task's outcome
+        home = {"at_home": False, "done": [], "detail": str(exc)[:300]}
+    outcome["home"] = home
+    if home.get("at_home"):
+        if log is not None:
+            log(f"task {outcome.get('task_id')}: arm home ({'; '.join(home['done'])})")
+        return outcome
+    if log is not None:
+        log(f"task {outcome.get('task_id')}: the arm is not home: {home.get('detail')}")
+    if outcome.get("status") == "succeeded":
+        outcome["status"] = "incomplete"
+    outcome["reason"] = "; ".join(r for r in (outcome.get("reason"), f"the arm did not get home: {home.get('detail')}") if r)[:512]
+    return outcome
+
+
 class RuntimeBridge:
     def __init__(self, runtime, reasoner=None, *, capture_registry=None):
         from .perception.images import CaptureRegistry

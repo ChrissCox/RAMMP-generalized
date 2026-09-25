@@ -107,3 +107,28 @@ def fit_articulation(positions, *, kind, axis=None, prior_pivot=None, prior_sigm
             return {**slide, "overruled": "revolute"}
         return hinge
     return slide
+
+
+def hinge_from_faces(initial_normal, normal, *, prior_axis, min_turn_rad=.15, max_axis_change_deg=10.):
+    """The axis a panel turned about, from its face's normal before and after: (fit, "") or (None, why).
+
+    A single view of a door gives its face, and a hinge lies in that face, but not where in it: a cabinet leaning
+    sideways tilts its hinge within the face, which no one view shows. Once the panel has turned, the two normals
+    span the plane the hinge is perpendicular to: their cross product is the axis, their angle how far it turned.
+    Too small a turn leaves the cross product to the camera's noise; an axis far from the prior is a wrong plane.
+    """
+    first = np.asarray(initial_normal, dtype=float)
+    second = np.asarray(normal, dtype=float)
+    prior = np.asarray(prior_axis, dtype=float)
+    first, second, prior = first/np.linalg.norm(first), second/np.linalg.norm(second), prior/np.linalg.norm(prior)
+    turned = math.acos(min(1., max(-1., float(first @ second))))
+    if turned < min_turn_rad:
+        return None, f"the face turned {turned:.3f} rad, too little to place its axis"
+    axis = np.cross(first, second)
+    axis /= np.linalg.norm(axis)
+    if axis @ prior < 0.:
+        axis = -axis
+    change = math.degrees(math.acos(min(1., float(axis @ prior))))
+    if change > max_axis_change_deg:
+        return None, f"the faces put the axis {change:.1f} deg from the placed one; not the same panel"
+    return {"axis": [float(v) for v in axis], "turned": turned, "axis_change_deg": change}, ""

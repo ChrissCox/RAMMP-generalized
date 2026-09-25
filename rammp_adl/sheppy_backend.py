@@ -638,6 +638,72 @@ class SheppyArmBackend:
             return target, tuple(orientation), plan, {"back_m": back, "refused": refused}
         raise BackendFailure("planning_failed", "no way straight back out of the part: "+"; ".join(refused))
 
+    #: Where every task ends, as joint positions (the node loads the bench's recorded start pose); None: nowhere.
+    home_joints = None
+    #: Within this of home on every joint (continuous joints the short way round) the arm is home.
+    home_tolerance_rad = .02
+
+    async def return_home(self):
+        """End of a task: let go of a part held by its handle, back out of what the hand touched, go home.
+
+        A free object in the hand is carried home, not dropped. Every move is cuRobo's plan, slowed to
+        transit speed and guarded like any transit; a continuous joint goes the short way round. A stop from
+        the supervisor cancels it like any move. Returns what was done; raises BackendFailure short of home.
+        """
+        from types import SimpleNamespace
+        from .motion.sheppy_client import CONTINUOUS
+        if self.home_joints is None:
+            return {"at_home": False, "done": [], "detail": "no home pose is configured"}
+
+        async def quiet(**_):
+            return None
+        context = SimpleNamespace(cancel_event=asyncio.Event(), node_id="home", task_id="home", feedback=quiet)
+        await self._own("return_home", context)
+        done = []
+        try:
+            settle = getattr(self.client, "settle", None)
+            if settle is not None:
+                await settle(timeout_s=5.)
+            if self.holding_id is not None and any(record["entity_id"] == self.holding_id for record in self.constraints.values()):
+                opened = await self.client.gripper(0.)             # a handle stays with its door
+                if not opened["ok"] or opened["stalled"]:
+                    raise BackendFailure("release_incomplete", "the gripper did not open to let go of the "+self.holding_id)
+                done.append(f"let go of {self.holding_id}")
+                self.holding_id, self.grasp_knuckle = None, None
+            if self.at_contact:
+                position, orientation, planned, way_out = await self._way_out(context)
+                await self._step_to(position, orientation, context, safety_class="transit", planned=planned)
+                done.append(f"backed {way_out['back_m']*100:.0f} cm out")
+            self.current_pose, self.at_contact, self.contact_support = None, False, None
+            live = self.client.live_joints()
+            if live is None:
+                raise BackendFailure("stale_state", "no fresh joint state to plan home from")
+            now = [float(v) for v in live["position_rad"]]
+            target = [q+wrap_diff(h, q) if i in CONTINUOUS else float(h) for i, (q, h) in enumerate(zip(now, self.home_joints))]
+            if max(abs(a-b) for a, b in zip(now, target)) < self.home_tolerance_rad:
+                return {"at_home": True, "done": done or ["already home"]}
+            if not await self.client.stationary(duration_s=self.stationary_duration_s):
+                raise BackendFailure("stale_state", "the arm is not verifiably still before planning home")
+            try:
+                trajectory, _ = await self.client.plan_to_joints(target, cancel_event=context.cancel_event)
+            except SheppyClientError as exc:
+                raise BackendFailure("planning_failed", f"no plan home: {exc}") from exc
+            trajectory = self._scaled(trajectory, "transit")
+            guard = self._guard(exclusions=[], tool_exclusion_m=self.tool_exclusion_m if self.holding_id else 0.)
+            receipt = await self.client.execute(trajectory, cancel_event=context.cancel_event, guard=guard)
+            self.log(f"home: transit move {trajectory.duration_s:.1f} s, {len(trajectory.points)} points: "
+                     f"{receipt['status']} {receipt['message'][:120]}")
+            if receipt["status"] != "succeeded":
+                if settle is not None:
+                    await settle(timeout_s=3.)
+                raise BackendFailure("stale_state" if receipt["status"] == "guard_trip" else "planning_failed",
+                                     f"the move home stopped: {receipt['message']}")
+            self.last_trajectory = None
+            done.append(f"home in {trajectory.duration_s:.1f} s")
+            return {"at_home": True, "done": done}
+        finally:
+            self._release("return_home")
+
     async def _back_out(self, context, exclusions=()):
         """Retrace the last completed path, empty-handed, from where it ended; True if the arm is now back at its start."""
         path = self.last_trajectory
@@ -965,9 +1031,70 @@ class SheppyArmBackend:
     pull_first = {"rad": .5, "m": .06}
     pull_rest = {"rad": .8, "m": .12}
     pull_segments_max = 4
+    #: A stiff pull on a revolute part stops after this much so the wrist camera can see the face turn and
+    #: refit the hinge's axis (motion/articulation.hinge_from_faces); the rest is planned about the refit.
+    pull_check = {"rad": .35}
+    #: A pull the part stops by pushing back is resumed after letting go, re-measuring and gripping again,
+    #: at most this many times in one follow; after that the failure goes to the executor.
+    pull_regrips_max = 2
+    refit_min_turn_rad, refit_max_axis_change_deg = .15, 10.
     #: Ask the model for a second opinion on how far the part moved, from the last frame. It gates
     #: nothing and costs a provider request per pull, so it is off unless the operator turns it on.
     model_progress_check = False
+
+    async def _face_fit(self, arc, initial_normal):
+        """The hinge axis from the face seen now and at the pull's start: (fit, "") or (None, why)."""
+        from .motion.articulation import hinge_from_faces
+        settle = getattr(self.client, "settle", None)
+        if settle is not None:
+            await settle(timeout_s=3.)
+        normal, _ = await self.scene.surface_normal()
+        if normal is None:
+            return None, "no plane in view"
+        return hinge_from_faces(initial_normal, normal, prior_axis=arc["axis_base"], min_turn_rad=self.refit_min_turn_rad,
+                                max_axis_change_deg=self.refit_max_axis_change_deg)
+
+    async def _refit_axis(self, constraint_id, arc, initial_normal, achieved, refits):
+        """Mid-pull, still holding: the arc to pull the rest on, its axis refitted from how the face turned."""
+        fit, why = await self._face_fit(arc, initial_normal)
+        if fit is not None and abs(fit["turned"]-achieved) > max(.1, .4*achieved):
+            fit, why = None, f"the face turned {fit['turned']:.3f} rad while the hand moved {achieved:.3f}: another plane"
+        refits.append({"at": round(achieved, 4), "let_go": False, "fitted": fit is not None, "why": why,
+                       **({} if fit is None else {"turned": round(fit["turned"], 4), "axis_change_deg": round(fit["axis_change_deg"], 2),
+                                                  "axis_base": [round(v, 5) for v in fit["axis"]]})})
+        if fit is None:
+            self.log(f"follow {constraint_id}: no refit at {achieved:.3f} rad ({why}); the rest follows the placed hinge")
+            return arc
+        self.log(f"follow {constraint_id}: at {achieved:.3f} rad the face had turned {fit['turned']:.3f}; the hinge axis "
+                 f"refitted {fit['axis_change_deg']:.1f} deg from the placed one for the rest")
+        return {**arc, "axis_base": fit["axis"]}
+
+    async def _regrip_after_trip(self, constraint_id, arc, initial_normal, achieved, refits):
+        """A pull stopped by the part pushing back: let go so it relaxes, see how far it turned, grip it again.
+
+        The hand stays where the pull stopped; only the fingers move. Returns the arc to go on with, its axis
+        refitted from the relaxed face, and how far the part has turned in this follow. A part no longer
+        between the fingers is a slip; a turn the camera cannot measure is the original mismatch, re-gripped.
+        """
+        opened = await self.client.gripper(0.)
+        if not opened["ok"]:
+            raise BackendFailure("model_mismatch", "the pull tripped and the gripper did not open to re-measure: "+opened["message"])
+        fit, why = await self._face_fit(arc, initial_normal)
+        closed = await self.client.gripper(self.grasp_close_knuckle_rad)
+        if (not closed["ok"] or not closed["stalled"]
+                or closed["knuckle_rad"] > self.grasp_close_knuckle_rad-self.grasp_stall_margin_rad):
+            self.holding_id, self.grasp_knuckle = None, None
+            raise BackendFailure("slip", "let go to re-measure after the pull tripped; the part was no longer between the fingers")
+        self.grasp_knuckle = closed["knuckle_rad"]
+        refits.append({"at": round(achieved, 4), "let_go": True, "fitted": fit is not None, "why": why,
+                       **({} if fit is None else {"turned": round(fit["turned"], 4), "axis_change_deg": round(fit["axis_change_deg"], 2),
+                                                  "axis_base": [round(v, 5) for v in fit["axis"]]})})
+        if fit is None:
+            raise BackendFailure("model_mismatch", f"the pull tripped at {achieved:.3f} rad and the part could not be "
+                                                   f"re-measured ({why}); gripped again")
+        self.log(f"follow {constraint_id}: tripped at {achieved:.3f} rad; let go, the part had turned {fit['turned']:.3f} "
+                 f"about an axis {fit['axis_change_deg']:.1f} deg from the placed one; gripped again, going on about that axis")
+        return {**arc, "axis_base": fit["axis"]}, fit["turned"]
 
     def _tool_jacobian(self, positions):
         """Tool-point linear and angular velocity per joint rate (6x7), by differencing the kinematic model."""
@@ -1162,15 +1289,25 @@ class SheppyArmBackend:
             looking = asyncio.ensure_future(first_look()) if scene is not None else None
             from .motion.articulation import ArticulationError, fit_articulation
             compliant = bool(self.compliant_pull)
+            # A stiff pull on a hinge placed from one view: the view cannot see the hinge tilted within the face
+            # (a cabinet leaning sideways), and that error grows with the turn. The first stretch stops short so
+            # the camera sees how the face really turned; the rest is planned about the axis that shows.
+            measuring = not compliant and scene is not None and record["kind"] == "revolute" and unit == "rad"
+            refits, regrips = [], 0
             impedance = dict(self.pull_impedance) if compliant else None
             rate, acceleration = self.constraint_pace[unit]
             scale = self.speed_scales.get("contact", 1.)
             prior_pivot = None if arc.get("pivot_base") is None else list(arc["pivot_base"])
             q_now, p_now, o_now = start, position, orientation
             lag, refusal, trace, pulls, fits, planned_s, peak_force = None, None, [], [], [], 0., 0.
-            while len(pulls) < (self.pull_segments_max if compliant else 1):
-                stretch = target-achieved if not compliant else min(target-achieved, self.pull_first[unit] if not pulls
-                                                                   else self.pull_rest[unit])
+            segments = self.pull_segments_max if compliant else 2+self.pull_regrips_max if measuring else 1
+            while len(pulls) < segments:
+                if compliant:
+                    stretch = min(target-achieved, self.pull_first[unit] if not pulls else self.pull_rest[unit])
+                elif measuring and not pulls and target-achieved > self.pull_check[unit]+.1:
+                    stretch = self.pull_check[unit]         # the camera looks at the face before the rest
+                else:
+                    stretch = target-achieved
                 if stretch <= (.02 if unit == "rad" else .005):
                     break
                 began = time.monotonic()
@@ -1270,6 +1407,17 @@ class SheppyArmBackend:
                     if kind == "slip":
                         status, detail = "slipped", "the gripper closed further than at grasp during the pull; the part slipped out"
                         raise BackendFailure("slip", detail)
+                    if (kind == "contact" and measuring and regrips < self.pull_regrips_max and initial_normal is not None
+                            and target-achieved > .02):
+                        # The part pushed back: the hinge is not where it was placed. Letting go shows where it goes.
+                        regrips += 1
+                        arc, achieved = await self._regrip_after_trip(constraint_id, arc, initial_normal, achieved, refits)
+                        live = self.client.live_joints()
+                        if live is None:
+                            raise BackendFailure("stale_state", "no fresh joint state after gripping the part again")
+                        q_now = tuple(float(v) for v in live["position_rad"])
+                        p_now, o_now = self._tool_pose(q_now)
+                        continue
                     status, detail = "tripped", receipt["message"]
                     code = "model_mismatch" if kind == "contact" else "stale_state" if kind == "collision" else "safety_fault"
                     raise BackendFailure(code, f"stopped at {already+achieved:.3f} of {target_total:.3f} {unit}: {receipt['message']}",
@@ -1293,6 +1441,8 @@ class SheppyArmBackend:
                     raise BackendFailure("slip", detail)
                 if refusal is not None or live is None:
                     break
+                if measuring and not refits and target-achieved > .02 and initial_normal is not None:
+                    arc = await self._refit_axis(constraint_id, arc, initial_normal, achieved, refits)
                 q_now = tuple(float(v) for v in live["position_rad"])
                 p_now, o_now = self._tool_pose(q_now)
             for step in steps:
@@ -1345,6 +1495,7 @@ class SheppyArmBackend:
                                "parameters_version": record.get("parameters_version")},
                 "profile_id": profile["profile_id"], "target": target_total, "achieved": already+achieved, "unit": unit,
                 "steps": steps, "hinge": hinge, "pull": {"compliant": compliant, "stretches": pulls, "planned_s": round(planned_s, 3),
+                                                         "refits": refits,
                                                          "wrist_lag": lag, "peak_force_n": peak_force,
                                                          "duration_s": sum(pull["duration_s"] for pull in pulls),
                                                          "path_deviation_m": max(pull["path_deviation_m"] for pull in pulls)},
@@ -1368,7 +1519,7 @@ class SheppyArmBackend:
                     scores["local"] = progress_score(achieved=already+achieved, target=target_total,
                                                      grasped=self.holding_id == entity_id, verified=verified)
                 progress = {**scores, "measured_turn_rad": ([m["turned_rad"] for m in measured if m["turned_rad"] is not None] or [None])[-1],
-                            "verified_locally": verified, "hinge": hinge}
+                            "verified_locally": verified, "hinge": hinge, "refits": refits}
                 record_attempt(record, task_id=context.task_id, target=target_total, achieved=already+achieved, status=status,
                                detail=detail, peak_effort_nm=peak, trip=trip_info, progress=progress)
                 if self.constraint_store is not None:

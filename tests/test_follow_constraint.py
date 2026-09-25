@@ -1,6 +1,7 @@
 """Guarded constraint following on the sheppy backend, time scaling, contact exclusions."""
 import asyncio
 import json
+import math
 import tempfile
 import time
 import unittest
@@ -14,7 +15,8 @@ from rammp_adl.handlers import BackendFailure
 from rammp_adl.intake import draft_context, seed_articulation
 from rammp_adl.motion.collision_guard import EffortGuard, GuardSet, GuardError
 from rammp_adl.motion.kinematics import UrdfChain, quaternion_matrix
-from rammp_adl.motion.sheppy_client import JOINT_VMAX, JOINTS, SheppyClientError, executor_problems, scale_trajectory_time
+from rammp_adl.motion.sheppy_client import (JOINT_VMAX, JOINTS, KNUCKLE_CLOSED_RAD, SheppyClientError, executor_problems,
+                                             scale_trajectory_time, wrap_diff)
 from rammp_adl.sheppy_backend import PullGuard, SheppyArmBackend, SheppyGeometry
 from rammp_adl.world import WorldModel
 
@@ -173,7 +175,51 @@ class YieldingClient(ArcClient):
 
 
 @unittest.skipUnless(BUNDLE.exists(), "The assembly sphere bundle is separate evidence")
-class FollowConstraintTests(unittest.TestCase):
+class DoorScene:
+    """The wrist camera's view of the door face: its normal turned about the door's own axis as far as the door has.
+
+    The door's own axis is the placed hinge's leaned sideways within the face by lean_deg, which no single view shows.
+    The door turns with the hand; let go, it springs back by spring_back and is gripped again there.
+    """
+    def __init__(self, backend, client, *, lean_deg=2., spring_back=0.):
+        from rammp_adl.constraints import rotation_about
+        self.backend, self.client, self.rotation_about = backend, client, rotation_about
+        self.pivot = np.asarray(HINGE["pivot_base"], dtype=float)
+        self.axis = np.asarray(HINGE["axis_base"], dtype=float)/np.linalg.norm(HINGE["axis_base"])
+        self.lean_deg, self.spring_back, self.offset = lean_deg, spring_back, 0.
+        self.start = self.n0 = self.true_axis = None
+        self.looks = []
+
+    def _flat(self):
+        tool = np.asarray(self.backend._tool_pose(self.client.joints)[0])-self.pivot
+        return tool-(tool @ self.axis)*self.axis
+
+    async def surface_normal(self, **kwargs):
+        flat = self._flat()
+        if self.start is None:
+            self.start = flat
+            n0 = np.cross(self.axis, flat/np.linalg.norm(flat))
+            self.n0 = n0 if n0[0] < 0 else -n0                         # the face looks back at the robot
+            self.true_axis = self.rotation_about(self.n0, math.radians(self.lean_deg)) @ self.axis
+        turned = abs(math.atan2(np.cross(self.start, flat) @ self.axis, self.start @ flat))
+        if self.client.knuckle < .1:
+            self.offset = self.spring_back                              # let go: the door relaxes back
+        door = turned-self.offset
+        self.looks.append(door)
+        return list(self.rotation_about(self.true_axis, HINGE["direction"]*door) @ self.n0), None
+
+    def crop_for(self, keyframe):
+        raise RuntimeError("no frames in this test")
+
+
+def regripping(knuckle):
+    closing = knuckle > .5
+    return {"ok": True, "knuckle_rad": .45 if closing else 0., "stalled": closing, "sent": True,
+            "message": "moved then settled short of the target" if closing else "at target"}
+
+
+class BackendCase(unittest.TestCase):
+    """The bench's catalog, kinematic model and door record behind a sheppy backend, with every guard recorded."""
     def setUp(self):
         self.catalog = Catalog(ROOT)
         self.chain = UrdfChain.from_path(BUNDLE/"arm-gripper-locked.urdf")
@@ -229,6 +275,8 @@ class FollowConstraintTests(unittest.TestCase):
             radii.append(float(np.linalg.norm(offset-(offset @ axis)*axis)))
         return np.asarray(radii)
 
+
+class FollowConstraintTests(BackendCase):
     def test_the_arc_is_planned_first_then_flown_as_one_guarded_pull(self):
         client, backend, world = self.arc()
         outcome = self.follow(backend, world, .5)
@@ -498,6 +546,61 @@ class FollowConstraintTests(unittest.TestCase):
             self.follow(backend, world, .2)
         self.assertEqual(caught.exception.code, "stale_state")
 
+    def radius_about(self, path, backend, axis):
+        pivot, axis = np.asarray(HINGE["pivot_base"]), np.asarray(axis)/np.linalg.norm(axis)
+        radii = []
+        for time_s in np.linspace(0., path.duration_s, 60):
+            offset = np.asarray(backend._tool_pose(path.sample(time_s).position)[0])-pivot
+            radii.append(float(np.linalg.norm(offset-(offset @ axis)*axis)))
+        return np.asarray(radii)
+
+    def test_a_stiff_pull_stops_short_so_the_camera_sees_the_hinge_lean_and_the_rest_follows_it(self):
+        client, backend, world = self.arc()
+        backend.scene = scene = DoorScene(backend, client, lean_deg=2.)
+        outcome = self.follow(backend, world, .9)
+        self.assertEqual(outcome.status, "succeeded")
+        data = outcome.evidence[0]["data"]
+        self.assertEqual(len(client.sent), 2)                                   # to the check, then the rest
+        self.assertAlmostEqual(data["pull"]["stretches"][0]["commanded"], .35, places=6)
+        refit = data["pull"]["refits"][0]
+        self.assertTrue(refit["fitted"])
+        self.assertFalse(refit["let_go"])
+        self.assertAlmostEqual(refit["axis_change_deg"], 2., delta=.05)
+        np.testing.assert_allclose(refit["axis_base"], scene.true_axis, atol=1e-4)
+        rest = self.radius_about(client.sent[1], backend, scene.true_axis)
+        self.assertLess(rest.max()-rest.min(), .001)                            # the rest turns about the door's own axis
+        self.assertAlmostEqual(data["achieved"], .9, places=6)
+        self.assertTrue(data["verified_locally"])
+        np.testing.assert_allclose(backend.constraint_arcs["cabinet_door_constraint"]["axis_base"], refit["axis_base"], atol=1e-5)
+
+    def test_a_pull_the_door_stops_lets_go_sees_where_it_went_grips_again_and_finishes(self):
+        client, backend, world = self.arc()
+        backend.scene = DoorScene(backend, client, lean_deg=2., spring_back=.03)
+        client.gripper_script = regripping
+        client.effort_at = lambda progress: (0.,)*5+(9. if len(client.sent) == 1 and progress > .6 else 0., 0.)
+        outcome = self.follow(backend, world, .9)
+        self.assertEqual(outcome.status, "succeeded")
+        data = outcome.evidence[0]["data"]
+        self.assertEqual(client.gripper_commands, [0., KNUCKLE_CLOSED_RAD])     # let go, then grip again: the arm stays
+        refit = data["pull"]["refits"][0]
+        self.assertTrue(refit["let_go"] and refit["fitted"])
+        self.assertAlmostEqual(refit["turned"], data["pull"]["stretches"][0]["commanded"]-.03, delta=.002)
+        self.assertEqual(backend.grasp_knuckle, .45)
+        self.assertAlmostEqual(data["achieved"], .9, places=6)                  # the door's own angle, not the hand's
+        self.assertTrue(data["verified_locally"])
+        self.assertEqual(data["pull"]["stretches"][0]["status"], "guard_trip")
+
+    def test_a_part_gone_from_the_fingers_when_let_go_is_a_slip(self):
+        client, backend, world = self.arc()
+        backend.scene = DoorScene(backend, client, spring_back=.2)
+        client.gripper_script = lambda knuckle: {"ok": True, "knuckle_rad": .8 if knuckle > .5 else 0., "stalled": False,
+                                                  "sent": True, "message": "at target"}
+        client.effort_at = lambda progress: (0.,)*5+(9. if progress > .6 else 0., 0.)
+        with self.assertRaises(BackendFailure) as failed:
+            self.follow(backend, world, .9)
+        self.assertEqual(failed.exception.code, "slip")
+        self.assertIsNone(backend.holding_id)
+
     def install_pose(self, world, role, position, orientation=(0., 0., 0., 1.)):
         from rammp_adl.world import MetricPose
         identities = world.snapshot().identities()
@@ -596,6 +699,106 @@ class FollowConstraintTests(unittest.TestCase):
                                    now=world.clock())
         self.assertEqual(len(seeded), 1)
         self.assertEqual(world.snapshot().fact("constraint_valid", {"constraint_id": "cabinet_door_constraint"}), "true")
+
+
+class HomingClient(TrackingClient):
+    """Plans to joints as asked, so the target the arm is sent home to is visible."""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.joint_targets = []
+
+    async def plan_to_joints(self, target_joints, *, timeout_s=None, cancel_event=None):
+        self.joint_targets.append(tuple(target_joints))
+        return trajectory(self.joints, tuple(target_joints)), {"message": "ok", "planning_time_s": .1}
+
+
+HOME = (0., .262, -3.141, -2.269, 0., .96, 1.571)
+
+
+class HomingTests(BackendCase):
+    """Every task ends at home: what the hand lets go of, how it leaves, and the way round it takes."""
+
+    def homed(self, client, **state):
+        backend, _ = self.backend(client)
+        backend.home_joints = HOME
+        for name, value in state.items():
+            setattr(backend, name, value)
+        return backend, asyncio.run(backend.return_home())
+
+    def test_a_handle_is_let_go_the_hand_backs_out_and_goes_home_the_short_way_round(self):
+        client = HomingClient(joints=(.2, .5, 3.10, -1.5, .1, .9, .5), knuckle=.45)
+        backend, report = self.homed(client, at_contact=True)
+        self.assertTrue(report["at_home"])
+        self.assertEqual(report["done"][:2], ["let go of handle_1", "backed 10 cm out"])
+        self.assertEqual(client.gripper_commands, [0.])
+        self.assertEqual(len(client.targets), 1)                              # the way out, along the approach
+        self.assertEqual(len(client.sent), 2)                                 # out, then home
+        self.assertAlmostEqual(client.joint_targets[0][2], 3.10+.02+wrap_diff(-3.141, 3.12), places=9)
+        self.assertGreater(client.joint_targets[0][2], 3.)                   # joint 3 does not swing round to -3.141
+        self.assertIsNone(backend.holding_id)
+        self.assertFalse(backend.at_contact)
+        self.assertEqual(self.guards[0]["exclusions"][0][1], .10)            # leaving the handle exempts it once
+
+    def test_at_home_nothing_moves_and_a_free_object_is_carried_home_not_dropped(self):
+        client = HomingClient(joints=HOME, knuckle=0.)
+        _, report = self.homed(client, holding_id=None, at_contact=False, current_pose=None)
+        self.assertEqual(report, {"at_home": True, "done": ["already home"]})
+        self.assertEqual((client.sent, client.gripper_commands), ([], []))
+        client = HomingClient(joints=(.3, .6, -2.9, -1.4, .2, .9, .6), knuckle=.4)
+        backend, report = self.homed(client, holding_id="cup_1", at_contact=False, current_pose=None)
+        self.assertTrue(report["at_home"])
+        self.assertEqual(client.gripper_commands, [])                        # the cup stays in the hand
+        self.assertEqual(self.guards[-1]["tool_exclusion_m"], backend.tool_exclusion_m)
+        self.assertEqual(backend.holding_id, "cup_1")
+
+    def test_a_task_is_done_only_with_the_arm_home_and_a_cancel_or_fault_leaves_it_where_it_stopped(self):
+        from rammp_adl.ros_bridge import finish_at_home
+
+        class Safety:
+            def __init__(self, fault=False, stopped=False):
+                self.fault_latched, self.resets = fault, 0
+                self.stop_requested = asyncio.Event()
+                if stopped:
+                    self.stop_requested.set()
+
+            async def reset(self):
+                self.resets += 1
+                self.stop_requested.clear()
+
+        class Backend:
+            home_joints = HOME
+
+            def __init__(self, fails=None):
+                self.fails, self.calls = fails, 0
+
+            async def return_home(self):
+                self.calls += 1
+                if self.fails:
+                    raise BackendFailure("planning_failed", self.fails)
+                return {"at_home": True, "done": ["home in 3.0 s"]}
+
+        def finish(outcome, backend, safety):
+            return asyncio.run(finish_at_home(dict(outcome), backend=backend, safety=safety))
+        done = {"task_id": "t", "status": "succeeded", "reason": "Measured task goal satisfied"}
+        safety = Safety(stopped=True)
+        home = finish(done, Backend(), safety)
+        self.assertEqual((home["status"], home["home"]["at_home"], safety.resets), ("succeeded", True, 1))
+        stuck = finish(done, Backend(fails="no plan home"), Safety())
+        self.assertEqual(stuck["status"], "incomplete")                     # the goal was met, the arm is not home
+        self.assertIn("the arm did not get home", stuck["reason"])
+        gave_up = finish({"task_id": "t", "status": "incomplete", "reason": "every way on was tried"}, backend := Backend(), Safety())
+        self.assertTrue(gave_up["home"]["at_home"] and backend.calls == 1)  # giving up still ends at home
+        for outcome, safety in (({"task_id": "t", "status": "cancelled"}, Safety()), (done, Safety(fault=True))):
+            backend = Backend()
+            left = finish(outcome, backend, safety)
+            self.assertEqual(backend.calls, 0)
+            self.assertIn("not moved", left["home"]["detail"])
+
+    def test_without_a_home_pose_nothing_moves(self):
+        backend, _ = self.backend(HomingClient(joints=(.3, .6, -2.9, -1.4, .2, .9, .6)))
+        report = asyncio.run(backend.return_home())
+        self.assertFalse(report["at_home"])
+        self.assertIn("no home pose", report["detail"])
 
 
 class ScalingAndExclusionTests(unittest.TestCase):
