@@ -12,7 +12,7 @@ ament_python_install_package(rammp_adl
   VERSION "${PROJECT_VERSION}"
 )
 
-install(PROGRAMS scripts/rammp_adl_node DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS scripts/rammp_adl_node scripts/task DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY launch DESTINATION share/${PROJECT_NAME}
   PATTERN "__pycache__" EXCLUDE
 )

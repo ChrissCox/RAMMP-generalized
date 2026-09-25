@@ -316,7 +316,20 @@ What each skill needs before it registers in hardware mode, all of it operator-s
 
 ### Typing a task
 
-With Astra enabled (the manifest passes `-p enable_astra:=true`; `OPENAI_API_KEY` must be exported by the login shell that `bash -lc` starts, for example from `~/.profile`, and is never read from source), send the task text alone. An empty `task_id` selects intake:
+With Astra enabled (the manifest passes `-p enable_astra:=true`; `OPENAI_API_KEY` must be exported by the login shell that `bash -lc` starts, for example from `~/.profile`, and is never read from source), give the running node the task in words and watch it:
+
+```zsh
+source ~/RAMMP-generalized/artifacts/jetson/ros-install/setup.zsh
+ros2 run rammp_adl_runtime task "open the cabinet door in front of you"
+```
+
+[`task`](../ros2/rammp_adl_runtime/scripts/task) sends the text alone to `/rammp/execute_task`; an empty `task_id` selects intake. It prints the node's own log lines from `/rosout`, its phases and finished steps, then the outcome, and exits 0 when the task succeeded. Ctrl-C cancels the task: the node stops the arm and the driver holds it. The command starts nothing itself, and it runs its own process on Cyclone DDS whatever the shell exports. After editing it, rebuild the package from a clean environment. A shell that has sourced other overlays, `~/ros2_ws` for example, would otherwise write them into the install's setup chain, which the adl node sources:
+
+```bash
+env -i HOME=$HOME USER=$USER PATH=/usr/local/bin:/usr/bin:/bin bash -c 'source /opt/ros/humble/setup.bash && source .venv/bin/activate && colcon --log-base artifacts/jetson/colcon-log build --base-paths interfaces ros2/rammp_adl_runtime --build-base artifacts/jetson/ros-build --install-base artifacts/jetson/ros-install --merge-install --packages-select rammp_adl_runtime --cmake-args -DPython3_EXECUTABLE="$VIRTUAL_ENV/bin/python"'
+```
+
+The raw action is the same request:
 
 ```bash
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp; source /opt/ros/humble/setup.bash; source /home/abra/RAMMP-generalized/artifacts/jetson/ros-install/setup.bash

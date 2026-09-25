@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+"""Give the running ADL runtime one task and watch it carry it out.
+
+    ros2 run rammp_adl_runtime task "open the cabinet door in front of you"
+
+Sends the words to /rammp/execute_task, prints the runtime's own log lines as they happen (read from
+/rosout) with its intake phases and finished plan steps, then the outcome. Ctrl-C cancels: the runtime
+stops the arm and the driver holds it where it is. This starts nothing and commands nothing itself; the
+runtime (sheppy's adl node) must already be up. Exit status 0 when the task succeeded.
+"""
+import os
+import sys
+
+# The deployment's containers and the runtime speak Cyclone DDS; a Fast DDS client finds them, then loses them.
+if os.environ.get("RMW_IMPLEMENTATION") != "rmw_cyclonedds_cpp":
+    os.environ["RMW_IMPLEMENTATION"] = "rmw_cyclonedds_cpp"
+    os.execv(sys.executable, [sys.executable, *sys.argv])
+
+import argparse
+import json
+import threading
+import time
+
+import rclpy
+import rclpy.utilities
+from rcl_interfaces.msg import Log
+from rclpy.action import ActionClient
+from rclpy.executors import SingleThreadedExecutor
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+
+from rammp_adl_interfaces.action import ExecuteTask
+
+RUNTIME = "rammp_adl_runtime"                       # the runtime node's logger name on /rosout
+LEVELS = {30: "WARN ", 40: "ERROR ", 50: "FATAL "}
+START_HINT = "cd ~/rammp-deployments/december_2026 && sheppy up adl --manifest sheppy-manifest.yaml"
+
+
+def wait(future, timeout_s=None):
+    deadline = None if timeout_s is None else time.monotonic()+timeout_s
+    while not future.done() and (deadline is None or time.monotonic() < deadline):
+        time.sleep(.05)
+    return future.done()
+
+
+def run(args):
+    text = " ".join(args.words)
+    node = Node("rammp_task")
+    began = time.monotonic()
+
+    def say(line):
+        print(f"[{time.monotonic()-began:6.1f} s] {line}", flush=True)
+
+    def on_log(message):
+        if message.name == RUNTIME:
+            say(LEVELS.get(message.level, "")+message.msg)
+    node.create_subscription(Log, "/rosout", on_log, QoSProfile(depth=200, reliability=ReliabilityPolicy.RELIABLE,
+                                                               durability=DurabilityPolicy.VOLATILE))
+    seen = {"phase": None, "done": set()}
+
+    def on_feedback(message):
+        feedback = message.feedback
+        if feedback.phase != seen["phase"]:
+            seen["phase"] = feedback.phase
+            say(f"-- {feedback.phase}")
+        if feedback.phase == "RUNNING":              # during intake the list is still the previous task's
+            for node_id in feedback.completed_nodes:
+                if node_id not in seen["done"]:
+                    seen["done"].add(node_id)
+                    say(f"-- step done: {node_id}")
+    action = ActionClient(node, ExecuteTask, "/rammp/execute_task")
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+    threading.Thread(target=executor.spin, daemon=True).start()
+    if not action.wait_for_server(timeout_sec=args.wait):
+        print(f"No ADL runtime answered on /rammp/execute_task within {args.wait:.0f} s. Start it first:\n  {START_HINT}",
+              file=sys.stderr)
+        return 2
+    say(f"task: {text}")
+    sent = action.send_goal_async(ExecuteTask.Goal(task_id="", task_text=text, plan_json=""), feedback_callback=on_feedback)
+    try:
+        wait(sent)
+        handle = sent.result()
+        if not handle.accepted:
+            say("the runtime refused the task: it is busy with another or shutting down")
+            return 1
+        result = handle.get_result_async()
+        wait(result)
+    except KeyboardInterrupt:
+        return cancel(sent, say)
+    response = result.result().result
+    payload = json.loads(response.result_json or "{}")
+    status = payload.get("status") or response.status
+    why = payload.get("reason") or payload.get("detail")
+    say(status+(f": {why}" if why else ""))
+    if payload.get("goal"):
+        say(f"goal {json.dumps(payload['goal'])}")
+    for step in payload.get("nodes") or ():
+        failure = f" {step['failure_code']}" if step.get("failure_code") else ""
+        detail = f": {step['detail'][:160]}" if step.get("detail") else ""
+        print(f"    {step['node_id']} {step['status']}{failure}{detail}", flush=True)
+    if payload.get("task_replans"):
+        say(f"replans: {payload['task_replans']}")
+    return 0 if status == "succeeded" else 1
+
+
+def cancel(sent, say):
+    """Ctrl-C: cancel the goal if it was accepted, so the runtime stops the arm."""
+    try:
+        if wait(sent, 2.) and sent.result().accepted:
+            say("cancelling: the runtime stops the arm and the driver holds it")
+            asked = sent.result().cancel_goal_async()
+            if wait(asked, 5.) and asked.result().goals_canceling:
+                say("cancel accepted")
+            else:
+                say("no answer to the cancel; use the e-stop if the arm is still moving")
+        else:
+            say("interrupted before the runtime accepted the task")
+    except KeyboardInterrupt:
+        pass
+    return 130
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="ros2 run rammp_adl_runtime task",
+                                     description="Give the running ADL runtime one task and watch it carry it out.")
+    parser.add_argument("words", nargs="+", help='the task in words, e.g. "open the cabinet door in front of you"')
+    parser.add_argument("--wait", type=float, default=10., metavar="S", help="seconds to wait for the runtime (10)")
+    args = parser.parse_args(rclpy.utilities.remove_ros_args(sys.argv)[1:])
+    rclpy.init()
+    try:
+        code = run(args)
+    except KeyboardInterrupt:                        # before anything was sent
+        code = 130
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)                                    # the spin thread holds no state worth a slow shutdown
+
+
+if __name__ == "__main__":
+    main()
