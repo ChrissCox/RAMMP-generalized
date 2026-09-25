@@ -16,6 +16,7 @@ changes what may happen. Nothing here moves the arm.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import os
@@ -72,12 +73,15 @@ class JevDecider:
     async def _post(self, body):
         if self.transport is not None:
             return await self.transport(self.config["endpoint"], {}, body, float(self.config["timeout_s"]))
-        import httpx
-        async with httpx.AsyncClient(timeout=float(self.config["timeout_s"])) as client:
-            response = await client.post(self.config["endpoint"], json=body,
-                                         headers={"Authorization": f"Bearer {self.api_key}"})
-            response.raise_for_status()
-            return response.json()
+        return await asyncio.to_thread(self._post_blocking, body)
+
+    def _post_blocking(self, body):
+        """The standard library's HTTP, off the event loop: the node runs without user site-packages."""
+        import urllib.request
+        request = urllib.request.Request(self.config["endpoint"], data=json.dumps(body).encode(), method="POST",
+                                         headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=float(self.config["timeout_s"])) as response:
+            return json.loads(response.read().decode())
 
     async def choose(self, state, *, question, instructions, options):
         """Ask one Choice; options maps each key to what choosing it means."""
