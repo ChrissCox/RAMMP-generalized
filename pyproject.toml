@@ -16,6 +16,9 @@ cameras = ["opencv-python>=4.9", "pillow>=10"]
 realsense = ["pyrealsense2>=2.55,<3"]
 assembly = ["trimesh>=4.11,<5", "pycollada>=0.9,<1"]
 calibration = ["scipy>=1.11"]
+# Local perception (OWLv2). torch itself must be the Jetson build, installed first and without its PyPI
+# resolution: pip install --no-deps <torch wheel from https://pypi.jetson-ai-lab.io/jp6/cu126> (docs/jetson.md).
+perception = ["transformers==4.57.6", "pillow>=10", "filelock", "sympy>=1.13.3", "networkx>=2.5.1", "jinja2", "fsspec>=0.8.5"]
 
 [project.scripts]
 rammp-adl = "rammp_adl.cli:main"
