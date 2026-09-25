@@ -837,6 +837,39 @@ class HomingTests(BackendCase):
         _, report = self.prepared(client, keep_grip=True)                      # the last task ended holding it
         self.assertEqual(client.gripper_commands, [])
 
+    def test_the_way_home_is_planned_around_the_door_the_arm_swung_open_where_the_camera_sees_it(self):
+        import tempfile
+        from rammp_adl.motion.planner_world import BASE_WORLD
+        client, backend, world = self.arc()
+        self.record["measured_door"] = {"width_m": .27, "height_m": .45,
+                                        "handle_offsets_m": {"left": .245, "right": .022, "bottom": .14, "top": .3}}
+        self.record["hinge_side"] = "left"
+        backend.scene = scene = DoorScene(backend, client, lean_deg=0., spring_back=.2)
+        client.gripper_script = regripping
+        self.assertEqual(self.follow(backend, world, .9).status, "succeeded")
+        installed = []
+
+        async def set_world(path, **_):
+            installed.append(str(path))
+            return True, "world set"
+        homing = HomingClient(joints=client.joints, knuckle=.45)
+        homing.set_world = set_world
+        homing.world_held = None
+        backend.client, backend.home_joints, backend.at_contact = homing, HOME, True
+        scene.offset = .2                                                       # let go at 0.9, the door springs back
+        with tempfile.TemporaryDirectory() as folder:
+            backend.planner_world_dir = folder
+            report = asyncio.run(backend.return_home())
+            self.assertTrue(report["at_home"], report)
+            self.assertEqual(len(installed), 2)
+            self.assertEqual(installed[1], BASE_WORLD)                          # restored once home
+            scene_text = Path(installed[0]).read_text()
+        self.assertIn('"name": "table"', scene_text)                            # the bench's base obstacles stay
+        self.assertIn("moved_cabinet_door_constraint_0", scene_text)
+        seen = next(line for line in report["done"] if "planner's world" in line)
+        self.assertIn("as seen", seen)                                          # the camera saw it sprung back
+        self.assertIn("0.70", seen)
+
     def test_without_a_home_pose_nothing_moves(self):
         backend, _ = self.backend(HomingClient(joints=(.3, .6, -2.9, -1.4, .2, .9, .6)))
         report = asyncio.run(backend.return_home())

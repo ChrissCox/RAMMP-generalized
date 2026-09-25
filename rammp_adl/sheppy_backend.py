@@ -211,6 +211,8 @@ class SheppyArmBackend:
         # How far this task has moved each constrained part, and the mechanism it moved on: a follow's target is
         # the part's absolute goal, so a retry after a partial pull continues from there on the same hinge.
         self.constraint_progress, self.constraint_arcs = {}, {}
+        self.constraint_faces = {}                      # the part's face as the wrist camera saw it before it moved
+        self.planner_world_dir, self._worlds_written = None, 0
         self.events = []
 
     # -- registration --------------------------------------------------------
@@ -413,17 +415,7 @@ class SheppyArmBackend:
             raise BackendFailure("cancelled", receipt["message"])
         if receipt["status"] == "guard_trip":
             trip = receipt.get("trip") or {}
-            if self.record_root is not None and trip.get("kind") == "collision" and guard is not None:
-                from .perception.scene_record import save_guard_trip
-                live = self.client.live_joints()
-                reader = getattr(guard, "depth_reader", None)
-                save_guard_trip(self.record_root, depth_frame=reader() if callable(reader) else None,
-                                joints_rad=(live or {}).get("position_rad") or trajectory.points[0].state.position,
-                                trajectory=trajectory, elapsed_s=float(receipt.get("progress") or 0.)*trajectory.duration_s,
-                                exclusions=getattr(guard, "exclusions", ()), tool_exclusion_m=getattr(guard, "tool_exclusion_m", 0.),
-                                trip=checked_copy(trip), context={"node_id": context.node_id, "task_id": context.task_id,
-                                                                  "safety_class": safety_class,
-                                                                  "target": {"position_m": list(position), "orientation_xyzw": list(orientation)}})
+            self._record_trip(guard, trajectory, receipt, context, safety_class, position, orientation)
             # An obstacle on the remaining path means the collision evidence
             # the plan was admitted against is stale: stop, then replan.
             # Contact, a blind camera or lost state is a supervisor fault.
@@ -452,6 +444,64 @@ class SheppyArmBackend:
             except SheppyClientError as again:
                 raise BackendFailure("planning_failed", f"after backing out: {again}") from again
         return trajectory, planning
+
+    def _record_trip(self, guard, trajectory, receipt, context, safety_class, position=None, orientation=None):
+        """A collision trip's depth frame, joints and path, kept under record_root for later study."""
+        trip = receipt.get("trip") or {}
+        if self.record_root is None or trip.get("kind") != "collision" or guard is None:
+            return
+        from .perception.scene_record import save_guard_trip
+        live = self.client.live_joints()
+        reader = getattr(guard, "depth_reader", None)
+        save_guard_trip(self.record_root, depth_frame=reader() if callable(reader) else None,
+                        joints_rad=(live or {}).get("position_rad") or trajectory.points[0].state.position,
+                        trajectory=trajectory, elapsed_s=float(receipt.get("progress") or 0.)*trajectory.duration_s,
+                        exclusions=getattr(guard, "exclusions", ()), tool_exclusion_m=getattr(guard, "tool_exclusion_m", 0.),
+                        trip=checked_copy(trip), context={"node_id": context.node_id, "task_id": context.task_id,
+                                                          "safety_class": safety_class,
+                                                          "target": None if position is None else
+                                                          {"position_m": list(position), "orientation_xyzw": list(orientation)}})
+
+    async def _world_with_moved_parts(self, done):
+        """The planner's world with every part this task moved, where the camera sees it now; True if installed."""
+        from pathlib import Path
+        from .constraints import turn_between
+        from .motion.planner_world import door_panel, scene_yaml
+        if self.planner_world_dir is None or not hasattr(self.client, "set_world"):
+            return False
+        boxes = []
+        for constraint_id, moved in self.constraint_progress.items():
+            record, arc = self.constraints.get(constraint_id), self.constraint_arcs.get(constraint_id)
+            if abs(moved) < .05 or record is None or arc is None:
+                continue
+            angles, how = [moved, max(0., moved-.25)], "as pulled, and sprung back"
+            face = self.constraint_faces.get(constraint_id)
+            if face is not None and self.scene is not None:
+                normal, _ = await self.scene.surface_normal()
+                turned = None if normal is None else turn_between(face["normal"], normal, arc["axis_base"])
+                if turned is not None and abs(face["at"]+turned-moved) < .5:
+                    angles, how = [face["at"]+turned], "as seen"
+            for index, angle in enumerate(angles):
+                box = door_panel(record, arc, angle, name=f"moved_{constraint_id}_{index}")
+                if box is not None:
+                    boxes.append(box)
+            done.append(f"the {record['label']} in the planner's world at {', '.join(f'{a:.2f}' for a in angles)} rad ({how})")
+        if not boxes:
+            return False
+        self._worlds_written += 1
+        folder = Path(self.planner_world_dir)
+        path = folder/f"adl_moved_parts_{self._worlds_written % 5}.yaml"   # a new name: the client caches the last one
+        path.write_text(scene_yaml(boxes))
+        ok, message = await self.client.set_world(str(path))
+        if not ok:
+            done.append("the planner refused that world: "+message[:120])
+        return ok
+
+    async def _base_world(self):
+        from .motion.planner_world import BASE_WORLD
+        if self.planner_world_dir is not None and hasattr(self.client, "set_world"):
+            self.client.world_held = None                   # another program may have changed it since
+            await self.client.set_world(BASE_WORLD)
 
     def _surface_exclusion(self, point, normal, target):
         """A ball that holds the measured surface under the target and at most surface_protrusion_m in front of it.
@@ -682,6 +732,8 @@ class SheppyArmBackend:
         receipt = await self.client.execute(trajectory, cancel_event=context.cancel_event, guard=guard)
         self.log(f"home: transit move {trajectory.duration_s:.1f} s, {len(trajectory.points)} points: "
                  f"{receipt['status']} {receipt['message'][:120]}")
+        if receipt["status"] == "guard_trip":
+            self._record_trip(guard, trajectory, receipt, context, "transit")
         if receipt["status"] != "succeeded":
             settle = getattr(self.client, "settle", None)
             if settle is not None:
@@ -716,6 +768,7 @@ class SheppyArmBackend:
             settle = getattr(self.client, "settle", None)
             if settle is not None:
                 await settle(timeout_s=5.)
+            await self._base_world()
             now, _, off, live = self._home_offset()
             knuckle = live.get("knuckle_rad")
             shut = not keep_grip and (knuckle is None or knuckle > self.open_knuckle_rad)
@@ -762,7 +815,7 @@ class SheppyArmBackend:
             return {"at_home": False, "done": [], "detail": "no home pose is configured"}
         context = self._task_context("home")
         await self._own("return_home", context)
-        done = []
+        done, installed = [], False
         try:
             settle = getattr(self.client, "settle", None)
             if settle is not None:
@@ -779,9 +832,12 @@ class SheppyArmBackend:
             _, _, off, _ = self._home_offset()
             if off < self.home_tolerance_rad:
                 return {"at_home": True, "done": done or ["already home"]}
+            installed = await self._world_with_moved_parts(done)
             await self._fly_home(context, done)
             return {"at_home": True, "done": done}
         finally:
+            if installed:
+                await self._base_world()
             self._release("return_home")
 
     async def _back_out(self, context, exclusions=()):
@@ -1591,6 +1647,8 @@ class SheppyArmBackend:
             raise
         finally:
             self._release("follow_constraint")
+            if initial_normal is not None:
+                self.constraint_faces.setdefault(constraint_id, {"normal": [float(v) for v in initial_normal], "at": already})
             self.constraint_progress[constraint_id] = already+achieved
             if achieved > 0. or constraint_id not in self.constraint_arcs:
                 self.constraint_arcs[constraint_id] = arc

@@ -103,5 +103,24 @@ class FacesTests(unittest.TestCase):
         self.assertIn("not the same panel", why)
 
 
+
+class PlannerWorldTests(unittest.TestCase):
+    def test_a_swung_door_is_a_box_from_its_hinge_through_its_handle_to_its_free_edge(self):
+        from rammp_adl.motion.planner_world import door_panel, scene_yaml
+        record = {"kind": "revolute", "hinge_side": "left", "handle_position_m": [.84, -.10, .434],
+                  "measured_door": {"handle_offsets_m": {"left": .24, "right": .02, "bottom": .14, "top": .30}}}
+        arc = {"axis_base": [0., 0., 1.], "pivot_base": [.84, .14, .434], "direction": 1.}
+        shut = door_panel(record, arc, 0., name="door")
+        np.testing.assert_allclose(shut["position"], [.84, .01, .514], atol=1e-3)    # 0.26 m along the face, mid height
+        self.assertEqual(shut["dims"], [.28, .05, .46])
+        swung = door_panel(record, arc, math.pi/2, name="door")
+        np.testing.assert_allclose(swung["position"], [.97, .14, .514], atol=1e-3)   # turned a quarter about the hinge
+        self.assertAlmostEqual(swung["rpy_deg"][2], 0., places=2)
+        self.assertIsNone(door_panel({**record, "hinge_side": "bottom"}, arc, 1., name="flap"))
+        text = scene_yaml([swung])
+        self.assertIn("pedestal", text)
+        self.assertIn('"name": "door"', text)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 from concurrent.futures import TimeoutError as FutureTimeout
 import json
+import os
 from pathlib import Path
 import math
 import threading
@@ -177,6 +178,7 @@ def create_node():
                                   ("keyframe_min_interval_s", 3.0), ("record_dir", "artifacts/bench"), ("scene_refresh", False), ("scene_refresh_interval_s", 30.0),
                                   ("model_progress_check", False), ("compliant_contact", False), ("jev_decisions", True),
                                   ("home_joints_path", "artifacts/bench/start-joints.json"),
+                                  ("planner_world_dir", "/home/abra/.ros/rammp_box_opening/worlds"),
                                   ("transit_speed_scale", 0.4), ("contact_speed_scale", 0.25), ("max_evidence_age_s", 600.0), ("max_viewpoints", 6), ("wrist_rgb_topic", "/wrist_camera/color/image_raw"),
                                   ("wrist_depth_topic", "/wrist_camera/aligned_depth_to_color/image_raw"),
                                   ("wrist_rgb_info_topic", "/wrist_camera/color/camera_info"),
@@ -419,6 +421,10 @@ def create_node():
             runtime.backend.model_progress_check = bool(self.get_parameter("model_progress_check").value)
             runtime.backend.compliant_pull = bool(self.get_parameter("compliant_contact").value)
             runtime.backend.home_joints = getattr(self, "_home_joints", None)
+            # Scenes written here reach the planner container by the same path (the manifest mounts it).
+            world_dir = Path(self.get_parameter("planner_world_dir").value or ".")
+            if self.get_parameter("planner_world_dir").value and world_dir.is_dir() and os.access(world_dir, os.W_OK):
+                runtime.backend.planner_world_dir = str(world_dir)
             if getattr(self, "_closed_empty", None) is not None:
                 runtime.backend.closed_empty_knuckle_rad = self._closed_empty
             runtime.executor.decider, runtime.executor.stop_threshold = self._jev_decider(runtime)

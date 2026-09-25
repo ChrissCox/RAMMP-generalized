@@ -148,6 +148,7 @@ class SimulatedGripper:
         self.owned = self.admitted = self.ticking = True
         self.stopped = False
         self.ack = True
+        self.hold = False                  # held still while a test waits for the command stream
         self.current = .01
         self.worker = None
 
@@ -166,7 +167,7 @@ class SimulatedGripper:
     def update(self):
         if not self.ticking: return
         self.sequence += 1
-        if self.target is not None and not self.stopped:
+        if self.target is not None and not self.stopped and not self.hold:
             self.position += max(-.1, min(.1, self.target-self.position))
         active = self.stopped and self.ack
         self.buffer.ingest(packet(now=time.monotonic(), sequence=self.sequence,
@@ -203,7 +204,17 @@ class GripperExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self): await self.sim.close()
 
     async def wait_sent(self):
-        while self.sim.command_count < 2: await asyncio.sleep(.001)
+        # Hold the fingers until the transport has repeated its command: on a loaded machine the synthetic
+        # gripper could otherwise settle after one publish, and the command would end before the test acts.
+        self.sim.hold = True
+        try:
+            deadline = asyncio.get_running_loop().time()+5.
+            while self.sim.command_count < 2:
+                if asyncio.get_running_loop().time() > deadline:
+                    raise AssertionError("the transport never repeated its command")
+                await asyncio.sleep(.001)
+        finally:
+            self.sim.hold = False
 
     async def test_measured_aperture_success_does_not_claim_retention(self):
         receipt = await self.transport.execute(self.command, 'synthetic-permit')
