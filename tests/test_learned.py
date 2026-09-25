@@ -163,6 +163,118 @@ print(json.dumps(report))
             self.assertIn("cannot use fly", run(run_skill(missing, {}, host, library=library)).error)
 
 
+OPEN_CABINET = '''
+def run(robot, part="handle", amount=1.0):
+    """Open a hinged part by its handle: reach, grasp, swing it open, let go, and confirm the goal."""
+    handle = robot.find(part)[0]["id"]
+    robot.move_to(handle, "pregrasp")
+    robot.open_hand(0.08)
+    robot.move_to(handle, "grasp")
+    robot.grasp(handle)
+    robot.move_part(handle, amount, "rad")
+    robot.release(handle)
+    return robot.check("goal")
+'''
+
+
+@unittest.skipUnless(HAVE_JAIL, "bubblewrap and /usr/bin/python3 are needed for the jail")
+class BindingTests(unittest.TestCase):
+    """Learned skills against the executor: each call an admitted plan; a dry run admits the chain, moving nothing."""
+    ROOT = Path(__file__).resolve().parents[1]
+
+    def runtime(self, failures=None):
+        from rammp_adl.app import fixture_runtime
+        return fixture_runtime(self.ROOT/"examples/cabinet.context.json", root=self.ROOT, failures=failures)
+
+    def host(self, runtime, kind="executor", **options):
+        from rammp_adl.learned.host import DryRunHost, ExecutorHost
+        return (ExecutorHost if kind == "executor" else DryRunHost)(runtime, support_of={"cabinet_handle_1": "cabinet_door_1"}, **options)
+
+    def test_a_learned_skill_opens_the_cabinet_through_validated_steps(self):
+        runtime = self.runtime()
+        result = run(run_skill(OPEN_CABINET, {}, self.host(runtime)))
+        self.assertEqual(result.status, "succeeded", result.to_dict())
+        self.assertTrue(result.result)
+        self.assertTrue(runtime.world.goal_satisfied())
+        admitted = [e for e in runtime.trace.events if e["event"] == "task_started"]
+        self.assertEqual(len(admitted), 6)                                     # six motion calls, six admitted plans
+        self.assertEqual(runtime.executor.resources.owners, {})
+
+    def test_a_refused_step_reaches_the_skill_which_can_do_it_properly(self):
+        source = '''
+def run(robot):
+    """Grasp the handle, reaching it first if the robot refuses a grasp from afar."""
+    handle = robot.find("handle")[0]["id"]
+    robot.open_hand(0.08)
+    try:
+        robot.grasp(handle)
+        return "grasped at once"
+    except RobotError as error:
+        robot.log("refused: " + str(error)[:80])
+    robot.move_to(handle, "pregrasp")
+    robot.move_to(handle, "grasp")
+    robot.grasp(handle)
+    return robot.holding()
+'''
+        runtime = self.runtime()
+        result = run(run_skill(source, {}, self.host(runtime)))
+        self.assertEqual((result.status, result.result), ("succeeded", "cabinet_handle_1"), result.to_dict())
+        self.assertTrue(result.logs[0].startswith("refused: grasp"))            # refused by admission or by the backend
+
+    def test_a_failed_step_gets_a_fresh_epoch_and_the_skill_may_try_again(self):
+        source = '''
+def run(robot):
+    """Open the cabinet, trying the swing twice if the first one fails."""
+    handle = robot.find("handle")[0]["id"]
+    robot.move_to(handle, "pregrasp")
+    robot.open_hand(0.08)
+    robot.move_to(handle, "grasp")
+    robot.grasp(handle)
+    for attempt in range(2):
+        try:
+            robot.move_part(handle, 1.0, "rad")
+            return attempt
+        except RobotError as error:
+            robot.log(str(error)[:120])
+'''
+        runtime = self.runtime(failures={"skill_5_follow_constraint": ["model_mismatch"]})
+        result = run(run_skill(source, {}, self.host(runtime)))
+        self.assertEqual((result.status, result.result), ("succeeded", 1), result.to_dict())
+        self.assertIn("model_mismatch", result.logs[0])
+        self.assertTrue(runtime.world.goal_satisfied())
+
+    def test_a_dry_run_moves_nothing_and_refuses_what_a_real_run_would_refuse(self):
+        runtime = self.runtime()
+        dry = self.host(runtime, "dry")
+        result = run(run_skill(OPEN_CABINET, {}, dry))
+        self.assertEqual(result.status, "succeeded", result.to_dict())
+        self.assertEqual([step["skill"] for step in dry.steps],
+                         ["move_to_pose", "set_gripper", "move_to_pose", "grasp", "follow_constraint", "release"])
+        self.assertEqual(runtime.backend.events, [])                            # nothing was dispatched
+        self.assertFalse(runtime.world.goal_satisfied())
+        careless = '''
+def run(robot):
+    """Grasp the handle without reaching it."""
+    robot.grasp(robot.find("handle")[0]["id"])
+'''
+        refused = run(run_skill(careless, {}, self.host(runtime, "dry")))
+        self.assertEqual(refused.status, "failed")
+        self.assertIn("would be refused", refused.error)
+        for bad in ('robot.move_part("cabinet_handle_1", 3.0, "rad")', 'robot.move_to("cabinet_door_1", "grasp")', 'robot.grasp("fridge_9")'):
+            source = f'def run(robot):\n    """Try something out of bounds."""\n    {bad}\n'
+            self.assertEqual(run(run_skill(source, {}, self.host(runtime, "dry"))).status, "failed", bad)
+
+    def test_a_cancel_ends_the_skill_before_its_next_step(self):
+        import asyncio as aio
+
+        async def cancelled():
+            cancel = aio.Event()
+            cancel.set()
+            return await run_skill(OPEN_CABINET, {}, self.host(self.runtime(), cancel=cancel))
+        result = run(cancelled())
+        self.assertEqual((result.status, result.error), ("aborted", "the task was cancelled"))
+
+
 class LibraryTests(unittest.TestCase):
     def test_versions_are_kept_promoted_by_verified_runs_retired_by_failures_and_found_by_what_they_do(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -1,8 +1,11 @@
 # 15 Learned skills: model-written code in a sandbox
 
-Status: design, 2026-09-25. The jail, the code gate, the call protocol and the skill store are implemented
-([rammp_adl/learned/](../../rammp_adl/learned/)). The binding of the primitive API to the executor, the
-curriculum and the write-verify loop are not yet implemented.
+Status: 2026-09-25. Implemented in [rammp_adl/learned/](../../rammp_adl/learned/): the jail, the code gate,
+the call protocol, the skill store, and the binding of the primitive API to the executor
+([host.py](../../rammp_adl/learned/host.py)): `ExecutorHost` runs each motion primitive as a one-step plan
+through admission, the executor and the guards; `DryRunHost` moves nothing and has the validator admit the
+skill's steps as one growing chain. Tested against the fixture runtime only. Not yet built: a node entry
+point to run a skill on the robot, local perception behind `find`, the curriculum and the write-verify loop.
 
 ## Why
 
@@ -102,5 +105,6 @@ the first primitives; the door work becomes the first learned skill ("open a hin
 
 - Local perception (the detector, outlines, a small vision model) behind `find` and verification, so running
   skills is fast and free.
-- The executor binding of the primitive API, and the dry-run host.
+- A node entry point that runs a skill after intake (discovery, the task's world, the robot facts), and
+  cuRobo plan-only reachability in the dry run (today it checks admission, not reach).
 - Which model writes skills; how the curriculum is paced; how many verified runs promote a skill.

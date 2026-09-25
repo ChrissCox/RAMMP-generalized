@@ -32,6 +32,16 @@ def _frame(plan_nodes, context, catalog):
     return {"schema_version": "1.0.0", "skill_library_hash": catalog.hash, **snapshot_keys, "nodes": nodes, "edges": edges}
 
 
+def chain_plan(nodes, context, catalog):
+    """Nodes run one after another, as a plan for the current context (a learned skill's steps)."""
+    return _frame([(node, [nodes[index-1]["id"]] if index else []) for index, node in enumerate(nodes)], context, catalog)
+
+
+def profiles_by_class(context):
+    """The first profile of each safety class the context declares."""
+    return _profiles(context)
+
+
 def _reach_and_grasp(entity_id, profiles, *, prefix="t"):
     return [({"id": f"{prefix}_pregrasp", "skill": "move_to_pose",
               "args": {"target": {"entity_id": entity_id, "pose_role": "pregrasp"}, "profile_id": profiles["transit"]}}, []),
