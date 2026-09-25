@@ -794,6 +794,49 @@ class HomingTests(BackendCase):
             self.assertEqual(backend.calls, 0)
             self.assertIn("not moved", left["home"]["detail"])
 
+    def prepared(self, client, **options):
+        backend, _ = self.backend(client)
+        backend.home_joints = HOME
+        backend.holding_id, backend.at_contact, backend.current_pose = None, False, None
+        return backend, asyncio.run(backend.prepare_for_task(**options))
+
+    def test_first_of_all_the_hand_opens_and_the_empty_grippers_stop_is_measured_at_home(self):
+        client = HomingClient(joints=HOME, knuckle=.636)                     # left closed by another program
+        client.gripper_script = lambda k: (
+            {"ok": True, "knuckle_rad": 0., "stalled": False, "sent": True, "message": "at target"} if k == 0. else
+            {"ok": True, "knuckle_rad": .636, "stalled": True, "sent": True, "message": "moved then settled short of the target"})
+        backend, report = self.prepared(client, measure_gripper=True)
+        self.assertEqual(client.gripper_commands, [0., KNUCKLE_CLOSED_RAD, 0.])   # open, close on nothing, open again
+        self.assertEqual(client.sent, [])                                       # already home: the arm does not move
+        self.assertEqual((report["measured_stop_rad"], report["moved"]), (.636, False))
+        self.assertEqual(backend.closed_empty_knuckle_rad, .636)
+        client = HomingClient(joints=HOME, knuckle=0.)
+        backend, report = self.prepared(client)
+        self.assertEqual((client.gripper_commands, client.sent, report["done"]), ([], [], ["already home, hand open"]))
+
+    def test_away_from_home_the_hand_opens_before_anything_moves_backs_out_and_goes_home(self):
+        client = HomingClient(joints=(.2, .5, 3.10, -1.5, .1, .9, .5), knuckle=.45)
+        order = []
+        gripper, execute = client.gripper, client.execute
+
+        async def gripping(knuckle, **kwargs):
+            order.append(("gripper", knuckle))
+            return await gripper(knuckle, **kwargs)
+
+        async def flying(path, **kwargs):
+            order.append(("move", len(path.points)))
+            return await execute(path, **kwargs)
+        client.gripper, client.execute = gripping, flying
+        backend, report = self.prepared(client)
+        self.assertEqual(order[0], ("gripper", 0.))                             # the hand opens first
+        self.assertEqual([step[0] for step in order[1:]], ["move", "move"])     # out along the approach, then home
+        self.assertEqual(report["done"][:2], ["opened the hand where it was left", "backed 10 cm out"])
+        self.assertTrue(report["moved"])
+        self.assertGreater(client.joint_targets[0][2], 3.)                     # the short way round
+        client = HomingClient(joints=(.2, .5, 3.10, -1.5, .1, .9, .5), knuckle=.45)
+        _, report = self.prepared(client, keep_grip=True)                      # the last task ended holding it
+        self.assertEqual(client.gripper_commands, [])
+
     def test_without_a_home_pose_nothing_moves(self):
         backend, _ = self.backend(HomingClient(joints=(.3, .6, -2.9, -1.4, .2, .9, .6)))
         report = asyncio.run(backend.return_home())

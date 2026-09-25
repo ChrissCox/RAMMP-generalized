@@ -399,6 +399,8 @@ def create_node():
                     self.get_logger().info(f"tasks end at the home pose in {home_path}: {[round(v, 3) for v in self._home_joints]}")
                 except (OSError, ValueError, KeyError, TypeError) as exc:
                     self.get_logger().warning(f"no home pose ({exc}); tasks end wherever they stop")
+            self._closed_empty = None                       # the gripper's stop, measured before the first task
+            self._held_after_task = None                    # what the last task left in the hand
             runtime = self._compose_runtime(context_path)
             for name, why in sorted(runtime.backend.declared_gaps.items()):
                 self.get_logger().warning(f"declared capability {name} is a known gap: {why}")
@@ -417,6 +419,8 @@ def create_node():
             runtime.backend.model_progress_check = bool(self.get_parameter("model_progress_check").value)
             runtime.backend.compliant_pull = bool(self.get_parameter("compliant_contact").value)
             runtime.backend.home_joints = getattr(self, "_home_joints", None)
+            if getattr(self, "_closed_empty", None) is not None:
+                runtime.backend.closed_empty_knuckle_rad = self._closed_empty
             runtime.executor.decider, runtime.executor.stop_threshold = self._jev_decider(runtime)
             if self.get_parameter("record_dir").value:
                 record_dir = Path(self.get_parameter("record_dir").value)
@@ -558,8 +562,33 @@ def create_node():
             return articulations
 
         async def _intake_and_run(self, task_text):
-            """Typed task, ended with the arm at home (see _finish_at_home)."""
-            return await self._finish_at_home(await self._typed_task(task_text))
+            """Typed task, begun and ended with the arm at home (_prepare_for_task, _finish_at_home)."""
+            outcome = await self._finish_at_home(await self._typed_task(task_text))
+            self._held_after_task = getattr(self.runtime.backend, "holding_id", None)
+            return outcome
+
+        async def _prepare_for_task(self, task_id):
+            """Before anything else: the arm at the exact home joints and the hand open (prepare_for_task)."""
+            backend, safety = self.runtime.backend, self.runtime.executor.safety
+            if getattr(backend, "home_joints", None) is None or not hasattr(backend, "prepare_for_task"):
+                return None
+            if safety.fault_latched:
+                raise ContractError("a fault is latched; the arm is not moved")
+            if safety.stop_requested.is_set():
+                await safety.reset()
+            self._intake_phase = "PREPARING"
+            report = await backend.prepare_for_task(keep_grip=getattr(self, "_held_after_task", None) is not None,
+                                                    measure_gripper=getattr(self, "_closed_empty", None) is None)
+            if report.get("measured_stop_rad") is not None:
+                self._closed_empty = report["measured_stop_rad"]
+            self.get_logger().info(f"task {task_id}: ready at home ({'; '.join(report['done'])})")
+            if report.get("moved"):
+                from .perception.grounded_scene import SceneError
+                try:                                        # discovery sees the scene from home, not from where the arm was
+                    await self.scene.wait_for_keyframe(timeout_s=3., max_age_s=.5)
+                except SceneError:
+                    pass
+            return report
 
         async def _finish_at_home(self, outcome):
             """The typed task's end: the arm home (ros_bridge.finish_at_home), shown as RETURNING_HOME."""
@@ -592,6 +621,10 @@ def create_node():
                 self._intake_phase = "INTAKE_SEARCHING"
                 log.info(f"task {task_id}: {message}")
             try:
+                try:
+                    await self._prepare_for_task(task_id)
+                except Exception as exc:                    # noqa: BLE001 - reported as the task's outcome
+                    return declined("NOT_READY", f"the arm could not be made ready at home: {exc}")
                 await self._wait_for_refresh()
                 self._intake_phase = "INTAKE_DISCOVERING"
                 try:
@@ -618,12 +651,9 @@ def create_node():
                 reasoner = astra_for(runtime)
                 self.scene.reasoner = reasoner
                 try:
-                    bootstrap = await bootstrap_robot_facts(runtime.world, self.client, probe=True)
-                    if bootstrap["probed"] is not None:
-                        probed = bootstrap["probed"]
-                        log.info(f"task {task_id}: the gripper read half closed ({probed['from_knuckle_rad']:.3f} rad); closed it "
-                                 f"to check: {'nothing between the fingers' if bootstrap['gripper_empty_asserted'] else 'it is holding something'}"
-                                 f" ({probed['message']}, {probed['knuckle_rad'] if probed['knuckle_rad'] is None else round(probed['knuckle_rad'], 3)})")
+                    closed = getattr(self, "_closed_empty", None)
+                    bootstrap = await bootstrap_robot_facts(runtime.world, self.client,
+                                                            **({} if closed is None else {"closed_knuckle_rad": closed-.03}))
                     visibility = seed_visibility(runtime.world, self.scene, now=runtime.world.clock())
                     seed_articulation(runtime.world, articulations, now=runtime.world.clock())
                     self._intake_phase = "INTAKE_OBSERVING"

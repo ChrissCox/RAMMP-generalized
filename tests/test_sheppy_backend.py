@@ -291,6 +291,22 @@ class BackendTests(unittest.TestCase):
             run(self.backend.move_to_pose(args, execution_context(self.world, "n3")))
         self.assertEqual(caught.exception.code, "planning_failed")
 
+    def test_closed_on_nothing_is_read_against_the_measured_stop_not_the_nominal_one(self):
+        # The afternoon of 2026-09-25 the empty gripper's pads met at 0.636 rad, not the nominal 0.80.
+        self.backend.closed_empty_knuckle_rad = .636
+        for knuckle, empty in ((.636, True), (.569, False)):                   # nothing between the pads; the handle bar
+            self.backend.current_pose, self.backend.holding_id = ("cup_1", "grasp"), None
+            self.client.gripper_script = lambda k, knuckle=knuckle: (
+                {"ok": True, "knuckle_rad": 0., "stalled": False, "sent": True, "message": "open"} if k == 0. else
+                {"ok": True, "knuckle_rad": knuckle, "stalled": True, "sent": True, "message": "moved then settled short of the target"})
+            if empty:
+                with self.assertRaises(BackendFailure) as caught:
+                    run(self.backend.grasp({"entity_id": "cup_1", "profile_id": "bench_gripper"}, execution_context(self.world)))
+                self.assertEqual(caught.exception.code, "empty_grasp")
+            else:
+                outcome = run(self.backend.grasp({"entity_id": "cup_1", "profile_id": "bench_gripper"}, execution_context(self.world)))
+                self.assertEqual((outcome.status, self.backend.holding_id), ("succeeded", "cup_1"))
+
     def test_grasp_away_from_the_grasp_pose_is_refused(self):
         with self.assertRaises(BackendFailure) as caught:
             run(self.backend.grasp({"entity_id": "cup_1", "profile_id": "bench_gripper"},
@@ -480,32 +496,15 @@ class BootstrapTests(unittest.TestCase):
         self.assertFalse(result["gripper_empty_asserted"])
         self.assertEqual(world.snapshot().fact("gripper_empty", {"robot_id": "robot"}), "unknown")
 
-    def test_a_half_closed_gripper_is_closed_to_find_out_whether_it_holds_anything(self):
+    def test_the_measured_stop_is_what_reads_as_closed(self):
         catalog = Catalog(ROOT)
-
-        def world():
-            return WorldModel({**context_document(), "entities": [
-                {"entity_id": "robot", "label": "arm", "entity_revision": 1, "pose_roles": [], "confidence": .9,
-                 "age_s": 0, "position_validity": "unknown", "orientation_validity": "unknown", "source_ids": ["bench"],
-                 "facts": []}]}, catalog, max_evidence_age_s=120.)
-        empty = FakeClient(knuckle=.636)                                      # left half closed by another program
-        checked = world()
-        result = run(bootstrap_robot_facts(checked, empty, probe=True))
-        self.assertEqual(empty.gripper_commands, [KNUCKLE_CLOSED_RAD])       # closed, never opened
-        self.assertTrue(result["gripper_empty_asserted"])
-        self.assertEqual(result["probed"]["from_knuckle_rad"], .636)
-        self.assertEqual(checked.snapshot().fact("gripper_empty", {"robot_id": "robot"}), "true")
-        holding = FakeClient(knuckle=.636)
-        holding.gripper_script = lambda knuckle: {"ok": True, "knuckle_rad": .64, "stalled": True, "sent": True,
-                                                  "message": "moved then settled short of the target"}
-        held = world()
-        result = run(bootstrap_robot_facts(held, holding, probe=True))
-        self.assertEqual((result["knuckle_state"], result["gripper_empty_asserted"]), ("holding", False))
-        self.assertEqual(held.snapshot().fact("gripper_empty", {"robot_id": "robot"}), "unknown")
-        for client, probe in ((FakeClient(knuckle=.636, armed=False), True), (FakeClient(knuckle=.636), False)):
-            result = run(bootstrap_robot_facts(world(), client, probe=probe))
-            self.assertEqual((client.gripper_commands, result["probed"], result["gripper_empty_asserted"]), ([], None, False))
-
+        world = WorldModel({**context_document(), "entities": [
+            {"entity_id": "robot", "label": "arm", "entity_revision": 1, "pose_roles": [], "confidence": .9,
+             "age_s": 0, "position_validity": "unknown", "orientation_validity": "unknown", "source_ids": ["bench"],
+             "facts": []}]}, catalog, max_evidence_age_s=120.)
+        result = run(bootstrap_robot_facts(world, FakeClient(knuckle=.636), closed_knuckle_rad=.636-.03))
+        self.assertEqual((result["knuckle_state"], result["gripper_empty_asserted"]), ("closed", True))
+        self.assertEqual(world.snapshot().fact("gripper_empty", {"robot_id": "robot"}), "true")
 
 if __name__ == "__main__":
     unittest.main()

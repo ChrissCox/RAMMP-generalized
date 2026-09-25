@@ -638,10 +638,118 @@ class SheppyArmBackend:
             return target, tuple(orientation), plan, {"back_m": back, "refused": refused}
         raise BackendFailure("planning_failed", "no way straight back out of the part: "+"; ".join(refused))
 
-    #: Where every task ends, as joint positions (the node loads the bench's recorded start pose); None: nowhere.
+    #: Where every task starts and ends, as joint positions (the node loads the bench's recorded start pose);
+    #: None: nowhere.
     home_joints = None
     #: Within this of home on every joint (continuous joints the short way round) the arm is home.
-    home_tolerance_rad = .02
+    home_tolerance_rad = .005
+    #: The knuckle reading where the empty gripper's pads meet. The driver reports it on a scale that has changed
+    #: under a restart (0.80 in the morning of 2026-09-25, 0.636 that afternoon), so the node measures it before
+    #: its first task (prepare_for_task); the grasp and the re-grip read a stop this close to it as nothing held.
+    closed_empty_knuckle_rad = KNUCKLE_CLOSED_RAD
+    open_knuckle_rad = .05
+
+    def _task_context(self, node_id):
+        from types import SimpleNamespace
+
+        async def quiet(**_):
+            return None
+        return SimpleNamespace(cancel_event=asyncio.Event(), node_id=node_id, task_id=node_id, feedback=quiet)
+
+    def _home_offset(self):
+        """The joints now, the home joints the short way round from them, and the largest difference."""
+        from .motion.sheppy_client import CONTINUOUS
+        live = self.client.live_joints()
+        if live is None:
+            raise BackendFailure("stale_state", "no fresh joint state to place the arm")
+        now = [float(v) for v in live["position_rad"]]
+        target = [q+wrap_diff(h, q) if i in CONTINUOUS else float(h) for i, (q, h) in enumerate(zip(now, self.home_joints))]
+        return now, target, max(abs(a-b) for a, b in zip(now, target)), live
+
+    async def _fly_home(self, context, done):
+        """cuRobo's plan to the home joints, slowed to transit speed and guarded like any transit."""
+        _, target, off, _ = self._home_offset()
+        if off < self.home_tolerance_rad:
+            return
+        if not await self.client.stationary(duration_s=self.stationary_duration_s):
+            raise BackendFailure("stale_state", "the arm is not verifiably still before planning home")
+        try:
+            trajectory, _ = await self.client.plan_to_joints(target, cancel_event=context.cancel_event)
+        except SheppyClientError as exc:
+            raise BackendFailure("planning_failed", f"no plan home: {exc}") from exc
+        trajectory = self._scaled(trajectory, "transit")
+        guard = self._guard(exclusions=[], tool_exclusion_m=self.tool_exclusion_m if self.holding_id else 0.)
+        receipt = await self.client.execute(trajectory, cancel_event=context.cancel_event, guard=guard)
+        self.log(f"home: transit move {trajectory.duration_s:.1f} s, {len(trajectory.points)} points: "
+                 f"{receipt['status']} {receipt['message'][:120]}")
+        if receipt["status"] != "succeeded":
+            settle = getattr(self.client, "settle", None)
+            if settle is not None:
+                await settle(timeout_s=3.)
+            raise BackendFailure("stale_state" if receipt["status"] == "guard_trip" else "planning_failed",
+                                 f"the move home stopped: {receipt['message']}")
+        self.last_trajectory = None
+        done.append(f"home in {trajectory.duration_s:.1f} s")
+
+    async def _open_hand(self, why):
+        opened = await self.client.gripper(0.)
+        if not opened["ok"] or opened["stalled"]:
+            raise BackendFailure("release_incomplete", f"the gripper did not open ({why}): {opened['message']}")
+        self.holding_id, self.grasp_knuckle = None, None
+
+    async def prepare_for_task(self, *, keep_grip=False, measure_gripper=False):
+        """First of all in a task: the arm at the exact home joints, the hand open.
+
+        Away from home, a hand left closed is opened before anything moves (the bench declares nothing held; a
+        part left in the hand, a handle say, stays where it is), the hand backs straight out along its approach
+        in case it was left at a part, and cuRobo plans home. At home the gripper is opened. With
+        measure_gripper the empty gripper is closed once to its stop and opened again: where its pads meet is
+        what the grasp reads as closed on nothing. keep_grip: the last task ended holding something, which the
+        hand keeps; nothing is opened or measured then. Returns what was done.
+        """
+        if self.home_joints is None:
+            return {"at_home": False, "done": [], "detail": "no home pose is configured", "moved": False, "measured_stop_rad": None}
+        context = self._task_context("prepare")
+        await self._own("prepare", context)
+        done, moved, measured = [], False, None
+        try:
+            settle = getattr(self.client, "settle", None)
+            if settle is not None:
+                await settle(timeout_s=5.)
+            now, _, off, live = self._home_offset()
+            knuckle = live.get("knuckle_rad")
+            shut = not keep_grip and (knuckle is None or knuckle > self.open_knuckle_rad)
+            if off >= self.home_tolerance_rad:
+                if shut:
+                    await self._open_hand("before moving from where the arm was left")
+                    done.append("opened the hand where it was left")
+                    shut = False
+                tool_position, _ = self._tool_pose(now)
+                try:
+                    position, orientation, planned, way_out = await self._way_out(context)
+                    await self._step_to(position, orientation, context, safety_class="transit",
+                                        exclusions=[(tool_position, self.grasp_exclusion_m)], planned=planned)
+                    done.append(f"backed {way_out['back_m']*100:.0f} cm out")
+                except BackendFailure as exc:
+                    done.append(f"no way straight back ({str(exc)[:80]}); home from where it was")
+                await self._fly_home(context, done)
+                moved = True
+            if shut:
+                await self._open_hand("at home, before the task")
+                done.append("opened the hand")
+            if measure_gripper and not keep_grip:
+                closed = await self.client.gripper(KNUCKLE_CLOSED_RAD)
+                reading = closed["knuckle_rad"]
+                if closed["ok"] and reading is not None and .3 < reading <= KNUCKLE_CLOSED_RAD+.05:
+                    self.closed_empty_knuckle_rad = measured = float(reading)
+                    done.append(f"the empty gripper closes at {reading:.3f} rad")
+                else:
+                    done.append(f"the closed gripper could not be read ({closed['message']}); keeping {self.closed_empty_knuckle_rad:.3f}")
+                await self._open_hand("after measuring its stop")
+            self.current_pose, self.at_contact, self.contact_support, self.last_trajectory = None, False, None, None
+            return {"at_home": True, "done": done or ["already home, hand open"], "moved": moved, "measured_stop_rad": measured}
+        finally:
+            self._release("prepare")
 
     async def return_home(self):
         """End of a task: let go of a part held by its handle, back out of what the hand touched, go home.
@@ -650,14 +758,9 @@ class SheppyArmBackend:
         transit speed and guarded like any transit; a continuous joint goes the short way round. A stop from
         the supervisor cancels it like any move. Returns what was done; raises BackendFailure short of home.
         """
-        from types import SimpleNamespace
-        from .motion.sheppy_client import CONTINUOUS
         if self.home_joints is None:
             return {"at_home": False, "done": [], "detail": "no home pose is configured"}
-
-        async def quiet(**_):
-            return None
-        context = SimpleNamespace(cancel_event=asyncio.Event(), node_id="home", task_id="home", feedback=quiet)
+        context = self._task_context("home")
         await self._own("return_home", context)
         done = []
         try:
@@ -665,41 +768,18 @@ class SheppyArmBackend:
             if settle is not None:
                 await settle(timeout_s=5.)
             if self.holding_id is not None and any(record["entity_id"] == self.holding_id for record in self.constraints.values()):
-                opened = await self.client.gripper(0.)             # a handle stays with its door
-                if not opened["ok"] or opened["stalled"]:
-                    raise BackendFailure("release_incomplete", "the gripper did not open to let go of the "+self.holding_id)
-                done.append(f"let go of {self.holding_id}")
-                self.holding_id, self.grasp_knuckle = None, None
+                held = self.holding_id                      # a handle stays with its door
+                await self._open_hand("to let go of "+held)
+                done.append(f"let go of {held}")
             if self.at_contact:
                 position, orientation, planned, way_out = await self._way_out(context)
                 await self._step_to(position, orientation, context, safety_class="transit", planned=planned)
                 done.append(f"backed {way_out['back_m']*100:.0f} cm out")
             self.current_pose, self.at_contact, self.contact_support = None, False, None
-            live = self.client.live_joints()
-            if live is None:
-                raise BackendFailure("stale_state", "no fresh joint state to plan home from")
-            now = [float(v) for v in live["position_rad"]]
-            target = [q+wrap_diff(h, q) if i in CONTINUOUS else float(h) for i, (q, h) in enumerate(zip(now, self.home_joints))]
-            if max(abs(a-b) for a, b in zip(now, target)) < self.home_tolerance_rad:
+            _, _, off, _ = self._home_offset()
+            if off < self.home_tolerance_rad:
                 return {"at_home": True, "done": done or ["already home"]}
-            if not await self.client.stationary(duration_s=self.stationary_duration_s):
-                raise BackendFailure("stale_state", "the arm is not verifiably still before planning home")
-            try:
-                trajectory, _ = await self.client.plan_to_joints(target, cancel_event=context.cancel_event)
-            except SheppyClientError as exc:
-                raise BackendFailure("planning_failed", f"no plan home: {exc}") from exc
-            trajectory = self._scaled(trajectory, "transit")
-            guard = self._guard(exclusions=[], tool_exclusion_m=self.tool_exclusion_m if self.holding_id else 0.)
-            receipt = await self.client.execute(trajectory, cancel_event=context.cancel_event, guard=guard)
-            self.log(f"home: transit move {trajectory.duration_s:.1f} s, {len(trajectory.points)} points: "
-                     f"{receipt['status']} {receipt['message'][:120]}")
-            if receipt["status"] != "succeeded":
-                if settle is not None:
-                    await settle(timeout_s=3.)
-                raise BackendFailure("stale_state" if receipt["status"] == "guard_trip" else "planning_failed",
-                                     f"the move home stopped: {receipt['message']}")
-            self.last_trajectory = None
-            done.append(f"home in {trajectory.duration_s:.1f} s")
+            await self._fly_home(context, done)
             return {"at_home": True, "done": done}
         finally:
             self._release("return_home")
@@ -965,7 +1045,7 @@ class SheppyArmBackend:
             if not outcome["ok"]:
                 raise BackendFailure("empty_grasp", "the gripper did not close: "+outcome["message"])
             closed_on_nothing = (not outcome["stalled"]
-                                 or outcome["knuckle_rad"] > self.grasp_close_knuckle_rad-self.grasp_stall_margin_rad)
+                                 or outcome["knuckle_rad"] > self.closed_empty_knuckle_rad-self.grasp_stall_margin_rad)
             # Stalled almost open: the fingers are pressing on the part, not around it.
             jammed = not closed_on_nothing and outcome["knuckle_rad"] < .15*self.grasp_close_knuckle_rad
             if closed_on_nothing or jammed:
@@ -1082,7 +1162,7 @@ class SheppyArmBackend:
         fit, why = await self._face_fit(arc, initial_normal)
         closed = await self.client.gripper(self.grasp_close_knuckle_rad)
         if (not closed["ok"] or not closed["stalled"]
-                or closed["knuckle_rad"] > self.grasp_close_knuckle_rad-self.grasp_stall_margin_rad):
+                or closed["knuckle_rad"] > self.closed_empty_knuckle_rad-self.grasp_stall_margin_rad):
             self.holding_id, self.grasp_knuckle = None, None
             raise BackendFailure("slip", "let go to re-measure after the pull tripped; the part was no longer between the fingers")
         self.grasp_knuckle = closed["knuckle_rad"]
@@ -1651,19 +1731,15 @@ def _nearest_cluster(points, normal, target, *, cell_m=.01, reach_cells=2, seed_
 
 async def bootstrap_robot_facts(world, client, *, source_name="sheppy_client_bootstrap",
                                 open_knuckle_rad=.05, closed_knuckle_rad=KNUCKLE_CLOSED_RAD-.03,
-                                stationary_duration_s=.5, probe=False):
+                                stationary_duration_s=.5):
     """Register the robot's initial held/empty state from measurement, not from JSON.
 
     held_state comes from a fresh stationary dwell. gripper_empty is asserted
     only when the context declares no attachment and the knuckle reads either
-    open or at its closed stroke limit, where nothing can sit between the
-    fingers; an open gripper can still hold a wide object, so the attachment
-    declaration is the operator's, not this function's. An intermediate
-    knuckle stays unknown, unless probe is set (a task the operator started,
-    not the node's own startup): then the gripper is closed to its stroke
-    limit, which it reaches only with nothing between the fingers. One that
-    stops short, or does not move, is holding something and stays unknown.
-    Nothing the gripper holds is ever opened on here.
+    open or at its closed stroke limit (closed_knuckle_rad: the measured stop
+    less a margin), where nothing can sit between the fingers; an open gripper
+    can still hold a wide object, so the attachment declaration is the
+    operator's, not this function's. An intermediate knuckle stays unknown.
     """
     live = client.live_joints()
     if live is None:
@@ -1675,21 +1751,12 @@ async def bootstrap_robot_facts(world, client, *, source_name="sheppy_client_boo
     knuckle = live["knuckle_rad"]
     knuckle_state = ("unknown" if knuckle is None else "open" if knuckle <= open_knuckle_rad
                      else "closed" if knuckle >= closed_knuckle_rad else "intermediate")
-    probed = None
-    if (probe and knuckle_state == "intermediate" and context.get("attachment_id") == "empty"
-            and getattr(client, "motion_enabled", False)):
-        closed = await client.gripper(KNUCKLE_CLOSED_RAD)
-        probed = {"from_knuckle_rad": knuckle, "knuckle_rad": closed["knuckle_rad"], "message": closed["message"]}
-        if closed["ok"] and closed["knuckle_rad"] is not None and closed["knuckle_rad"] >= closed_knuckle_rad:
-            knuckle, knuckle_state = closed["knuckle_rad"], "closed"
-        else:
-            knuckle_state = "holding"
     empty = knuckle_state in ("open", "closed") and context.get("attachment_id") == "empty"
     if empty:
         facts.append(assertion("gripper_empty", {"robot_id": "robot"}))
     authority = world.authorize_source(source_name, world.catalog.predicates)
     evidence_id = "bootstrap-"+digest({"joints": list(live["position_rad"]), "knuckle": knuckle,
-                                       "at": live["received_at_monotonic_s"], "probed": probed})
+                                       "at": live["received_at_monotonic_s"]})
     world.register_evidence(evidence_id, source=authority, predicates=facts,
                             ttl_s=world.max_evidence_age_s, observed_at=world.clock())
     # Evidence records a measurement; only a committed operation asserts it.
@@ -1699,4 +1766,4 @@ async def bootstrap_robot_facts(world, client, *, source_name="sheppy_client_boo
     world.commit_effects(key, [{**fact, "evidence_id": evidence_id} for fact in facts],
                          snapshot.revision, snapshot.execution_epoch, backend_quiescent=True)
     return {"evidence_id": evidence_id, "facts": facts, "knuckle_rad": knuckle,
-            "knuckle_state": knuckle_state, "gripper_empty_asserted": empty, "probed": probed}
+            "knuckle_state": knuckle_state, "gripper_empty_asserted": empty}
