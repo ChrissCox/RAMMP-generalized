@@ -179,7 +179,7 @@ def create_node():
                                   ("model_progress_check", False), ("compliant_contact", False), ("jev_decisions", True),
                                   ("home_joints_path", "artifacts/bench/start-joints.json"),
                                   ("planner_world_dir", "/home/abra/.ros/rammp_box_opening/worlds"),
-                                  ("skill_library_dir", "artifacts/skills"),
+                                  ("skill_library_dir", "artifacts/skills"), ("local_perception", True),
                                   ("transit_speed_scale", 0.4), ("contact_speed_scale", 0.25), ("max_evidence_age_s", 600.0), ("max_viewpoints", 6), ("wrist_rgb_topic", "/wrist_camera/color/image_raw"),
                                   ("wrist_depth_topic", "/wrist_camera/aligned_depth_to_color/image_raw"),
                                   ("wrist_rgb_info_topic", "/wrist_camera/color/camera_info"),
@@ -393,6 +393,21 @@ def create_node():
                                         max_evidence_age_s=float(self.get_parameter("max_evidence_age_s").value))
             self._base_context_path = context_path
             # Every task ends here: the bench's recorded start pose, unless the operator names another.
+            # Discovery and grounding on the Jetson first (perception/local_discovery.py), warmed off the startup path.
+            self._detector = None
+            if self.get_parameter("local_perception").value:
+                from .perception.local_discovery import OwlDetector
+                self._detector = OwlDetector()
+
+                def warm(detector=self._detector, log=self.get_logger()):
+                    try:
+                        from PIL import Image
+                        began = time.monotonic()
+                        detector.detect(Image.new("RGB", (64, 48)), ["door handle"])
+                        log.info(f"local perception ready ({detector.name} on {detector.device}, {time.monotonic()-began:.1f} s)")
+                    except Exception as exc:                # noqa: BLE001 - discovery then goes to Astra, as before
+                        log.warning(f"local perception unavailable ({type(exc).__name__}: {str(exc)[:120]}); discovery uses Astra")
+                threading.Thread(target=warm, daemon=True, name="local-perception-warmup").start()
             self._home_joints = None
             home_path = Path(self.get_parameter("home_joints_path").value) if self.get_parameter("home_joints_path").value else None
             if home_path is not None:
@@ -487,13 +502,21 @@ def create_node():
                 return await original(reason, fault=fault)
             safety.request_stop = logged
 
+        def _local_first(self, reasoner):
+            """Discovery and grounding answered by the local detector when it can, Astra otherwise."""
+            detector = getattr(self, "_detector", None)
+            if detector is None or reasoner is None:
+                return reasoner
+            from .perception.local_discovery import LocalFirstReasoner
+            return LocalFirstReasoner(reasoner, detector, log=self.get_logger().info)
+
         def _install_runtime(self, runtime, reasoner):
             self._log_stops(runtime)
             previous = self.bridge
             self.runtime = runtime
             self.bridge = RuntimeBridge(runtime, reasoner)
             if self.scene is not None:
-                self.scene.reasoner = reasoner
+                self.scene.reasoner = self._local_first(reasoner)
             old = getattr(previous, "reasoner", None)
             if old is not None and old is not reasoner:
                 asyncio.ensure_future(old.close())
@@ -728,7 +751,7 @@ def create_node():
                 await self._wait_for_refresh()
                 self._intake_phase = "INTAKE_DISCOVERING"
                 try:
-                    found = await search_until_visible(self.scene, self.runtime.backend, self.bridge.reasoner,
+                    found = await search_until_visible(self.scene, self.runtime.backend, self._local_first(self.bridge.reasoner),
                                                        self.runtime.world.snapshot().context, task_text,
                                                        max_viewpoints=int(self.get_parameter("max_viewpoints").value), log=searching)
                 except (IntakeError, SceneError) as exc:
@@ -749,7 +772,7 @@ def create_node():
                 self._intake_phase = "INTAKE_BOOTSTRAP"
                 runtime = self._compose_runtime(context, constraints={a["record"]["constraint_id"]: a["record"] for a in articulations})
                 reasoner = astra_for(runtime)
-                self.scene.reasoner = reasoner
+                self.scene.reasoner = self._local_first(reasoner)
                 try:
                     closed = getattr(self, "_closed_empty", None)
                     bootstrap = await bootstrap_robot_facts(runtime.world, self.client,

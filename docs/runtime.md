@@ -343,6 +343,18 @@ Keyframes ([keyframes.py](../rammp_adl/perception/keyframes.py)) are captures ta
 
 What runs end to end is observe, move_to_pose over the measured roles, set_gripper, grasp, follow_constraint and release of an attached part: pick up and hold, or open a door or drawer by its handle. Releasing a free object onto a surface still needs support detection.
 
+### Local perception first
+
+With `local_perception` on (the default), discovery and grounding are first answered on the Jetson by OWLv2 ([local_discovery.py](../rammp_adl/perception/local_discovery.py)), the open-vocabulary detector rammp_box_opening already runs here. The model is loaded and warmed at startup. It looks at the same screened keyframe crop Astra would get, for a household vocabulary plus the task's own words, in one pass: about 0.5 s warm in fp16 on the Orin, against 7-10 s and a paid request. Its boxes become entities in Astra's answer shape:
+- a label and a kind;
+- for a handle, the door or drawer box that contains it;
+- a grasp point at the box's centre;
+- whether the head of the task's first phrase is among them.
+
+Within a kind, weak or contained duplicates are dropped. A word the vocabulary does not know counts as a thing to pick up only when the task's verb is a grasp. Depth does everything metric afterwards, as before. When the target is not seen, or the detector is unavailable, the request goes to Astra unchanged, which also supplies the search hints.
+
+On the bench's keyframes from 2026-09-25, the door handle and its door were found from home in every frame (handle 0.60-0.78). A cup, which was not there, was correctly reported unseen.
+
 ### Running a learned skill
 
 `ros2 run rammp_adl_runtime task --skill FILE.py "words"` (or `--library NAME`, `--args JSON`, `--dry-run`) runs a learned skill ([design 15](design/15-learned-skills.md)) instead of a plan. Intake runs as for any task: home, the words to look for, the task's world. The goal is then settled if the words bind to one, and the skill runs in the jail against the executor, with each motion call an admitted, guarded plan. With `--dry-run` nothing moves: the validator admits the skill's steps as one chain. With a goal, success is the goal measured true afterwards, and a library skill's record is updated with that. The first seed skill is [open_by_handle.py](../skills/learned_seeds/open_by_handle.py): the door work written as a learned skill. With `--learn` (and `--rehearse-only`, `--rounds N`), a model writes the skill instead ([loop.py](../rammp_adl/learned/loop.py), [config/learning.json](../config/learning.json)): it sees the task, the primitive API, the scene, the library's closest skills and, after a failed round, what failed. Each answer is gated, rehearsed, run and verified against the task's goal, and the first verified one is kept in `artifacts/skills` as provisional. Each round is one writer request.
