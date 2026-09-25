@@ -18,6 +18,7 @@ The architecture is suitable with the changes recorded in [the audit](../audit-2
 | [11 packages](11-package-layout.md), [12 contracts](12-interface-contracts.md) | Package responsibilities and actual IDL source |
 | [13 kitchen](13-worked-example-kitchen.md) | Bounded integration scenario |
 | [14 performance](14-performance.md) | Continuous motion, reduced idle time and measured latency |
+| [15 learned skills](15-learned-skills.md) | Model-written skills in a jail over guarded primitives; library, curriculum, verification |
 | [external facts](00-interface-fact-sheet.md) | Pinned source facts and deployment checks |
 
 Schemas and ROS definitions live in files; prose links to them instead of carrying alternate field lists. The YAML is JSON-compatible YAML 1.2 so the offline checker needs only Python's standard library. Runtime validation uses full JSON Schema plus semantic, evidence and geometry gates. Six explicit fixture handlers are implemented; every catalog entry retains planned hardware status. Neither fixture capability emulation nor joint-physics replay establishes deployed capability availability.
