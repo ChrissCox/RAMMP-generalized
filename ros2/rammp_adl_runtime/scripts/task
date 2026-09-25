@@ -85,7 +85,10 @@ def run(args):
         return 2
     say(f"task: {text}")
     plan_json = ""
-    if args.learn:
+    if args.propose:
+        plan_json = json.dumps({"learned_skill": {"propose": True, "count": args.propose}})
+        say(f"asking for {args.propose} practice tasks for what the robot sees")
+    elif args.learn:
         plan_json = json.dumps({"learned_skill": {"learn": True, "rehearse_only": args.rehearse_only,
                                                   **({"rounds": args.rounds} if args.rounds else {})}})
         say("learning a skill for this task"+(" (rehearsal only)" if args.rehearse_only else ""))
@@ -128,6 +131,8 @@ def run(args):
             f"returned {json.dumps(skill['result'])[:200]}")
         if skill.get("error"):
             print("    "+skill["error"][:800], flush=True)
+    for number, proposal in enumerate(payload.get("proposals") or (), 1):
+        print(f"  {number}. {proposal['task']}\n       why: {proposal['why']}\n       undo: {proposal['undo']}", flush=True)
     learning = payload.get("learning")
     if learning:
         for entry in learning.get("rounds", ()):
@@ -169,6 +174,8 @@ def main():
     parser.add_argument("--args", default="{}", metavar="JSON", help="the skill's arguments, as a JSON object")
     parser.add_argument("--dry-run", action="store_true", help="rehearse the skill: nothing moves")
     parser.add_argument("--learn", action="store_true", help="have a model write, rehearse, run and verify a skill for the task")
+    parser.add_argument("--propose", type=int, nargs="?", const=3, metavar="N",
+                        help="the curriculum: look (from home) and propose N practice tasks; nothing else moves")
     parser.add_argument("--rehearse-only", action="store_true", help="with --learn: stop after the rehearsal; nothing moves")
     parser.add_argument("--rounds", type=int, help="with --learn: at most this many attempts (default from config/learning.json)")
     args = parser.parse_args(rclpy.utilities.remove_ros_args(sys.argv)[1:])

@@ -10,6 +10,7 @@
     "store": false
   },
   "max_rounds": 4,
+  "candidates": 3,
   "examples": 4,
   "promote_after": 3,
   "retire_after": 3

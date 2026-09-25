@@ -8,8 +8,9 @@ skill's steps as one growing chain), the write-gate-rehearse-run-verify loop
 ([loop.py](../../rammp_adl/learned/loop.py), writer model in [config/learning.json](../../config/learning.json)),
 and the node's entry points (`task --skill`, `--library`, `--learn`, `--dry-run`, `--rehearse-only`). The loop
 and the binding are tested against the fixture runtime; the writer model answered one live request with a
-skill the gate admitted. Not yet run on the robot. Not yet built: the curriculum, local perception behind
-`find`, cuRobo reach in the rehearsal.
+skill the gate admitted. Also implemented: RSIAgent's parallel candidates, separate verifier, failure lessons and curriculum (below), and
+local perception (OWLv2) behind discovery and grounding. Not yet run on the robot. Not yet built: cuRobo reach in
+the rehearsal.
 
 ## Why
 
@@ -99,16 +100,33 @@ keeps asking for them; the model can write a request for one, never the primitiv
 7. **Keep.** A skill that verified is stored as `provisional`; after it verifies on the bench a set number of
    times it becomes `verified`; repeated failures demote it. Every version is kept with its evidence.
 
-## What stays
+## From RSIAgent
 
-The validator, the executor, the supervisor, the guards, the recovery loop, going home before and after every
-task, and the rule that metric poses, planning and world facts are local. The existing catalog skills become
-the first primitives; the door work becomes the first learned skill ("open a hinged part by its handle").
+[RSIAgent](https://aetherlabsai.github.io/RSIAgent/) (arXiv:2609.15364) improves an agent without touching its
+weights. A curriculum agent, an actor that works in code, and a verifier kept apart from the actor build a memory
+of procedures, settings and failure lessons. Broad exploration runs several complementary projects in parallel,
+and deep exploration then refines sequentially. What carries over to a real arm:
 
-## Open
+- **Broad in rehearsal, deep on the arm.** Each round the writer offers up to three different approaches in one
+  request. All are gated and rehearsed side by side at no cost. Jev picks among those that rehearse cleanly,
+  scoring all of them in one call, and only that one runs.
+- **A verifier apart from the actor.** A measured goal decides where one binds. Otherwise a model judges from
+  the view from home before and after, knowing the request and never the skill's code; done means 4 of 4 at
+  confidence 0.7 (`_judge_from_home`).
+- **Failure lessons.** After a session with failures, one request distils up to three general lessons, which
+  are kept in the library and shown to the writer on similar tasks.
+- **A curriculum** (`task --propose`): from what the robot sees, the skills it has and the lessons, a model
+  proposes practice tasks aimed at what is missing, each with how the scene is put back. An operator picks one
+  and runs it with `--learn`.
+
+Its environment resets between attempts (VMs) have no counterpart on a real arm. The jail, rehearsal, the guards
+and going home stand in for them, and the operator's choice of practice keeps unattended physical exploration off.
+
+## What stays## Open
 
 - Local perception (the detector, outlines, a small vision model) behind `find` and verification, so running
   skills is fast and free.
 - cuRobo plan-only reachability in the rehearsal (today it checks admission, not reach).
-- The curriculum: proposing the next task from the scene and the library.
+- Unattended curriculum runs: they need automatic resets (a door put back, objects returned), which only
+  some tasks have yet.
 - Which model writes skills; how the curriculum is paced; how many verified runs promote a skill.

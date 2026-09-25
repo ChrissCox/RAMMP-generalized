@@ -87,6 +87,31 @@ class SkillLibrary:
     def names(self):
         return sorted(path.parent.name for path in self.root.glob("*/skill.json")) if self.root.is_dir() else []
 
+    def add_lessons(self, task, lessons, *, source=""):
+        """Short general lessons from attempts that failed (RSIAgent's failure lessons), kept for similar tasks."""
+        path = self.root/"lessons.json"
+        self.root.mkdir(parents=True, exist_ok=True)
+        kept = json.loads(path.read_text()) if path.is_file() else []
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        for lesson in lessons:
+            lesson = " ".join(str(lesson).split())[:300]
+            if lesson and all(entry["lesson"] != lesson for entry in kept):
+                kept.append({"lesson": lesson, "task": task[:200], "source": source, "at_utc": stamp})
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(kept[-200:], indent=1)+"\n")
+        tmp.replace(path)
+
+    def lessons(self, query, k=6):
+        """The kept lessons sharing the most words with the query (and its task), newest first among equals."""
+        path = self.root/"lessons.json"
+        if not path.is_file():
+            return []
+        words = lambda text: set(re.findall(r"[a-z]+", text.lower()))-{"the", "a", "an", "to", "of", "and", "it", "in", "on"}
+        wanted = words(query)
+        scored = [(len(wanted & words(entry["lesson"]+" "+entry["task"])), index, entry["lesson"])
+                  for index, entry in enumerate(json.loads(path.read_text()))]
+        return [lesson for overlap, _, lesson in sorted(scored, reverse=True)[:k] if overlap]
+
     def search(self, query, k=5):
         """The usable skills whose descriptions share the most words with the query, verified first."""
         words = lambda text: set(re.findall(r"[a-z]+", text.lower()))-{"the", "a", "an", "to", "of", "and", "it", "in", "on"}

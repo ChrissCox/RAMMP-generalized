@@ -681,7 +681,7 @@ def create_node():
                     "simulation_only": False, "goal": goal, "skill": {**run.to_dict(), "version": version, "dry_run": dry,
                                                                       "steps": getattr(host, "steps", [])}}
 
-        async def _learn(self, runtime, task_id, task_text, goal, spec):
+        async def _learn(self, runtime, task_id, task_text, goal, spec, before_keyframe=None):
             """Voyager's loop for this task: a model writes a skill, it is gated, rehearsed, run and verified; kept if so."""
             from .learned import run_skill
             from .learned.host import DryRunHost, ExecutorHost
@@ -702,16 +702,26 @@ def create_node():
                 return await run_skill(source, {}, ExecutorHost(runtime, cancel=cancel, log=log.info), library=library)
 
             async def verify(run):
-                if goal is None:
-                    return None, "no measurable goal for this task"
-                met = bool(runtime.world.goal_satisfied())
-                return met, f"the goal {json.dumps(goal['args'])} is {'measured met' if met else 'not met'}"
+                if goal is not None:
+                    met = bool(runtime.world.goal_satisfied())
+                    return met, f"the goal {json.dumps(goal['args'])} is {'measured met' if met else 'not met'}"
+                return await self._judge_from_home(runtime, task_text, before_keyframe)
+
+            async def choose(task, candidates):
+                """Jev scores the rehearsed candidates at once; the writer's first when it is unsure."""
+                decider = getattr(runtime.executor, "decider", None)
+                if decider is None or not getattr(decider, "available", False):
+                    return 0
+                decision = await decider.choose(f"Request to a robot arm: {task}", question="skill",
+                                                instructions="Which skill is most likely to do the request on the first try, safely?",
+                                                options={str(i): f"{name}: {description}"[:300] for i, (name, description) in enumerate(candidates)})
+                return int(decision.choice) if decision.choice is not None and decision.confidence >= .6 else 0
             self._intake_phase = "WRITING_SKILL"
             try:
                 story = await learn_skill(task_text, writer=writer, library=library, scene=DryRunHost(runtime).scene(),
                                           rehearse=rehearse, execute=None if spec.get("rehearse_only") else execute,
-                                          verify=verify, max_rounds=int(spec.get("rounds") or config["max_rounds"]),
-                                          examples=int(config["examples"]), log=log.info)
+                                          verify=verify, choose=choose, max_rounds=int(spec.get("rounds") or config["max_rounds"]),
+                                          examples=int(config["examples"]), candidates=int(config.get("candidates", 3)), log=log.info)
             finally:
                 self._skill_cancel = None
             story["writer_requests"] = writer.requests
@@ -722,6 +732,41 @@ def create_node():
             return {"task_id": task_id, "status": "succeeded" if ok else "incomplete", "reason": reason[:512], "nodes": [],
                     "task_replans": 0, "simulation_only": False, "goal": goal,
                     "learning": {**story, "rounds": [{k: v for k, v in r.items() if k != "source"} for r in story["rounds"]]}}
+
+        async def _propose(self, task_id, seen, count):
+            """The curriculum: practice tasks for what the robot sees, aimed at what its library cannot do yet. Moves nothing."""
+            from .learned.loop import ModelWriter, propose_tasks
+            config = strict_loads((Path(self.runtime.catalog.root)/"config/learning.json").read_bytes())
+            scene = [{"id": entity_id, **details} for entity_id, details in seen.items()]
+            self._intake_phase = "PROPOSING_PRACTICE"
+            proposals = await propose_tasks(ModelWriter(config), self._skill_library(), scene, count=count)
+            for proposal in proposals:
+                self.get_logger().info(f"practice: {proposal['task']} (why: {proposal['why'][:120]}; undo: {proposal['undo'][:80]})")
+            return {"task_id": task_id, "status": "succeeded", "reason": f"{len(proposals)} practice tasks proposed", "nodes": [],
+                    "task_replans": 0, "simulation_only": False, "goal": None, "proposals": proposals}
+
+        async def _judge_from_home(self, runtime, task_text, before_keyframe):
+            """The verifier RSIAgent keeps apart from the actor: the scene from home before and after, judged by a model
+            that sees the request and the two views, never the skill's code. Done at 4 of 4 with confidence 0.7."""
+            reasoner, scene = self.bridge.reasoner, self.scene
+            if reasoner is None or scene is None:
+                return None, "no measurable goal and no judge"
+            try:
+                await runtime.backend.return_home()
+                after = await scene.wait_for_keyframe(timeout_s=3., max_age_s=.5)
+                before = scene.keyframe_by_id(before_keyframe) if before_keyframe else None
+                images = [await asyncio.to_thread(scene.crop_for, frame) for frame in (before, after) if frame is not None]
+                judged = await reasoner.verify_progress(
+                    runtime.world.snapshot().context, task_text=task_text, images=images,
+                    rubric=["0: nothing the request asks for has happened", "1: started", "2: about half done",
+                            "3: nearly done", "4: done as asked"],
+                    question="The first image is before, the last after the robot acted. How much of the request is done?")
+            except Exception as exc:                        # noqa: BLE001 - an unjudged run is reported as such
+                return None, f"could not be judged: {type(exc).__name__}: {str(exc)[:120]}"
+            if judged.status != "OK" or judged.proposal is None:
+                return None, f"the judge declined: {judged.status}"
+            score, confidence = judged.proposal["score"], judged.proposal["confidence"]
+            return score == 4 and confidence >= .7, f"judged {score}/4 at {confidence:.2f} from the views before and after: {judged.detail[:160]}"
 
         async def _typed_task(self, task_text, skill=None):
             """Typed task: find the target, model what moves, build the task's world, settle the goal, run."""
@@ -762,6 +807,8 @@ def create_node():
                             "surface_width_m": None if not r.get("surface_geometry") else round(r["surface_geometry"]["width_m"], 3)}
                         for e, r in self.scene.entities.items() if e in found["entities"]}
                 log.info(f"task {task_id}: discovery {found['status']} in keyframe {found['keyframe']} (saved under artifacts/keyframes): {json.dumps(seen)}")
+                if skill is not None and skill.get("propose"):
+                    return await self._propose(task_id, seen, int(skill.get("count") or 3))
                 articulations = await self._articulate(task_id)
                 descriptors = self.scene.descriptors()
                 known = {d["entity_id"] for d in descriptors}
@@ -807,7 +854,7 @@ def create_node():
                 self._install_runtime(runtime, reasoner)
                 log.info(f"task {task_id}: goal {json.dumps(goal)}; visible {visibility['visible']}")
                 if skill is not None and skill.get("learn"):
-                    outcome = await self._learn(runtime, task_id, task_text, goal, skill)
+                    outcome = await self._learn(runtime, task_id, task_text, goal, skill, before_keyframe=found["keyframe"])
                     return {"visible_entities": visibility["visible"], "bootstrap": bootstrap["facts"], **outcome}
                 if skill is not None:
                     outcome = await self._run_learned(runtime, task_id, goal, {**skill, "task_text": task_text})
@@ -1100,8 +1147,8 @@ def create_node():
                         if not isinstance(carried, dict) or not isinstance(carried.get("learned_skill"), dict):
                             raise ContractError("a typed task carries no plan; only {\"learned_skill\": {...}}")
                         skill = carried["learned_skill"]
-                        if not (skill.get("source") or skill.get("library") or skill.get("learn")):
-                            raise ContractError("a learned skill needs its source, a library name, or learn")
+                        if not (skill.get("source") or skill.get("library") or skill.get("learn") or skill.get("propose")):
+                            raise ContractError("a learned skill needs its source, a library name, learn or propose")
                     self._intake_phase = "INTAKE_STARTING"     # feedback must not show the previous task's state
                     future = self.worker.submit(self._intake_and_run(request.task_text, skill=skill))
                 deadline = time.monotonic()+self.task_timeout_s

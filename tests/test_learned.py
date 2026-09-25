@@ -333,6 +333,81 @@ class LoopTests(unittest.TestCase):
             again = run(learn_skill("open the cabinet door", writer=Writer(), library=library, scene=[], rehearse=rehearse))
             self.assertIn("open_hinged_part", Writer.prompts[-1])                  # the kept skill is offered next time
 
+    def test_candidates_are_rehearsed_side_by_side_one_runs_and_failures_become_lessons(self):
+        from rammp_adl.app import fixture_runtime
+        from rammp_adl.learned.host import DryRunHost, ExecutorHost
+        from rammp_adl.learned.loop import learn_skill
+        careless = "```python\n# name: grab_first\ndef run(robot):\n    \"\"\"Grab the handle at once.\"\"\"\n    robot.grasp('cabinet_handle_1')\n```"
+        slow = ("```python\n# name: open_slowly\ndef run(robot):\n    \"\"\"Open the door in two pulls.\"\"\"\n"
+                "    h = 'cabinet_handle_1'\n    robot.move_to(h, 'pregrasp')\n    robot.open_hand(0.08)\n    robot.move_to(h, 'grasp')\n"
+                "    robot.grasp(h)\n    robot.move_part(h, 0.5, 'rad')\n    robot.move_part(h, 1.0, 'rad')\n    robot.release(h)\n```")
+        good = "```python\n# name: open_hinged_part\n"+OPEN_CABINET.strip()+"\n```"
+        answers = iter(["Three ways:\n"+careless+"\n"+good+"\n"+slow, "- Reach the grasp pose before grasping; a grasp from afar is refused."])
+
+        class Writer:
+            prompts = []
+
+            async def write(self, text):
+                Writer.prompts.append(text)
+                return next(answers)
+        runtime = fixture_runtime(self.ROOT/"examples/cabinet.context.json", root=self.ROOT)
+        support = {"cabinet_handle_1": "cabinet_door_1"}
+        rehearsed, executed, offered = [], [], []
+
+        async def rehearse(source):
+            rehearsed.append(source)
+            return await run_skill(source, {}, DryRunHost(runtime, support_of=support))
+
+        async def execute(source):
+            executed.append(source)
+            return await run_skill(source, {}, ExecutorHost(runtime, support_of=support))
+
+        async def verify(run):
+            return runtime.world.goal_satisfied(), "goal"
+
+        async def choose(task, candidates):
+            offered.append([name for name, _ in candidates])
+            return [name for name, _ in candidates].index("open_slowly")        # Jev prefers the two-pull opening
+        with tempfile.TemporaryDirectory() as folder:
+            library = SkillLibrary(folder)
+            story = run(learn_skill("open the cabinet door", writer=Writer(), library=library, scene=[], rehearse=rehearse,
+                                    execute=execute, verify=verify, choose=choose))
+            self.assertEqual((story["status"], story["name"]), ("learned", "open_slowly"), story)
+            self.assertEqual(len(rehearsed), 3)                                    # all three rehearsed, one round
+            self.assertEqual(offered, [["open_hinged_part", "open_slowly"]])       # the careless one failed rehearsal
+            self.assertEqual(len(executed), 1)
+            self.assertIn("up to 3 different approaches", Writer.prompts[0])
+            self.assertEqual(story["lessons"], ["Reach the grasp pose before grasping; a grasp from afar is refused."])
+            self.assertEqual(library.lessons("open a drawer by grasping its handle"), story["lessons"])
+            self.assertIn("Lessons from earlier attempts", __import__("rammp_adl.learned.loop", fromlist=["prompt"]).prompt(
+                "grasp the mug", scene=[], examples=[], feedback="", lessons=library.lessons("grasp the mug")))
+
+    def test_the_curriculum_proposes_practice_from_the_scene_and_what_the_library_lacks(self):
+        from rammp_adl.learned.loop import WriterError, propose_tasks
+
+        class Writer:
+            asked = []
+
+            async def write(self, text):
+                Writer.asked.append(text)
+                return ('Here: [{"task": "open the drawer below the cabinet", "why": "no slide skill yet", "undo": "close the drawer"},'
+                        ' {"task": "press the microwave button", "why": "no press skill", "undo": "none needed"},'
+                        ' {"task": "x", "why": "", "undo": ""}, {"why": "no task"}]')
+        with tempfile.TemporaryDirectory() as folder:
+            library = SkillLibrary(folder)
+            library.save("pick_up", PICK)
+            library.add_lessons("pick up the cup", ["Reach the grasp pose before grasping."])
+            proposals = run(propose_tasks(Writer(), library, [{"id": "cup_1", "label": "cup"}], count=2))
+        self.assertEqual([p["task"] for p in proposals], ["open the drawer below the cabinet", "press the microwave button"])
+        self.assertIn("pick_up (provisional)", Writer.asked[0])                 # it knows what the robot can do
+        self.assertIn("Reach the grasp pose", Writer.asked[0])
+
+        class Silent:
+            async def write(self, text):
+                return "I would practise opening things."
+        with tempfile.TemporaryDirectory() as folder, self.assertRaises(WriterError):
+            run(propose_tasks(Silent(), SkillLibrary(folder), []))
+
     def test_the_writers_answer_is_read_from_its_python_block(self):
         from rammp_adl.learned.loop import WriterError, extract_skill
         self.assertEqual(extract_skill("x\n```python\n# name: pick_up\ndef run(robot):\n    pass\n```"),
