@@ -618,7 +618,12 @@ def create_node():
                 reasoner = astra_for(runtime)
                 self.scene.reasoner = reasoner
                 try:
-                    bootstrap = await bootstrap_robot_facts(runtime.world, self.client)
+                    bootstrap = await bootstrap_robot_facts(runtime.world, self.client, probe=True)
+                    if bootstrap["probed"] is not None:
+                        probed = bootstrap["probed"]
+                        log.info(f"task {task_id}: the gripper read half closed ({probed['from_knuckle_rad']:.3f} rad); closed it "
+                                 f"to check: {'nothing between the fingers' if bootstrap['gripper_empty_asserted'] else 'it is holding something'}"
+                                 f" ({probed['message']}, {probed['knuckle_rad'] if probed['knuckle_rad'] is None else round(probed['knuckle_rad'], 3)})")
                     visibility = seed_visibility(runtime.world, self.scene, now=runtime.world.clock())
                     seed_articulation(runtime.world, articulations, now=runtime.world.clock())
                     self._intake_phase = "INTAKE_OBSERVING"

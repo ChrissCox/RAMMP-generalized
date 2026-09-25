@@ -480,6 +480,32 @@ class BootstrapTests(unittest.TestCase):
         self.assertFalse(result["gripper_empty_asserted"])
         self.assertEqual(world.snapshot().fact("gripper_empty", {"robot_id": "robot"}), "unknown")
 
+    def test_a_half_closed_gripper_is_closed_to_find_out_whether_it_holds_anything(self):
+        catalog = Catalog(ROOT)
+
+        def world():
+            return WorldModel({**context_document(), "entities": [
+                {"entity_id": "robot", "label": "arm", "entity_revision": 1, "pose_roles": [], "confidence": .9,
+                 "age_s": 0, "position_validity": "unknown", "orientation_validity": "unknown", "source_ids": ["bench"],
+                 "facts": []}]}, catalog, max_evidence_age_s=120.)
+        empty = FakeClient(knuckle=.636)                                      # left half closed by another program
+        checked = world()
+        result = run(bootstrap_robot_facts(checked, empty, probe=True))
+        self.assertEqual(empty.gripper_commands, [KNUCKLE_CLOSED_RAD])       # closed, never opened
+        self.assertTrue(result["gripper_empty_asserted"])
+        self.assertEqual(result["probed"]["from_knuckle_rad"], .636)
+        self.assertEqual(checked.snapshot().fact("gripper_empty", {"robot_id": "robot"}), "true")
+        holding = FakeClient(knuckle=.636)
+        holding.gripper_script = lambda knuckle: {"ok": True, "knuckle_rad": .64, "stalled": True, "sent": True,
+                                                  "message": "moved then settled short of the target"}
+        held = world()
+        result = run(bootstrap_robot_facts(held, holding, probe=True))
+        self.assertEqual((result["knuckle_state"], result["gripper_empty_asserted"]), ("holding", False))
+        self.assertEqual(held.snapshot().fact("gripper_empty", {"robot_id": "robot"}), "unknown")
+        for client, probe in ((FakeClient(knuckle=.636, armed=False), True), (FakeClient(knuckle=.636), False)):
+            result = run(bootstrap_robot_facts(world(), client, probe=probe))
+            self.assertEqual((client.gripper_commands, result["probed"], result["gripper_empty_asserted"]), ([], None, False))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1651,7 +1651,7 @@ def _nearest_cluster(points, normal, target, *, cell_m=.01, reach_cells=2, seed_
 
 async def bootstrap_robot_facts(world, client, *, source_name="sheppy_client_bootstrap",
                                 open_knuckle_rad=.05, closed_knuckle_rad=KNUCKLE_CLOSED_RAD-.03,
-                                stationary_duration_s=.5):
+                                stationary_duration_s=.5, probe=False):
     """Register the robot's initial held/empty state from measurement, not from JSON.
 
     held_state comes from a fresh stationary dwell. gripper_empty is asserted
@@ -1659,7 +1659,11 @@ async def bootstrap_robot_facts(world, client, *, source_name="sheppy_client_boo
     open or at its closed stroke limit, where nothing can sit between the
     fingers; an open gripper can still hold a wide object, so the attachment
     declaration is the operator's, not this function's. An intermediate
-    knuckle stays unknown.
+    knuckle stays unknown, unless probe is set (a task the operator started,
+    not the node's own startup): then the gripper is closed to its stroke
+    limit, which it reaches only with nothing between the fingers. One that
+    stops short, or does not move, is holding something and stays unknown.
+    Nothing the gripper holds is ever opened on here.
     """
     live = client.live_joints()
     if live is None:
@@ -1671,12 +1675,21 @@ async def bootstrap_robot_facts(world, client, *, source_name="sheppy_client_boo
     knuckle = live["knuckle_rad"]
     knuckle_state = ("unknown" if knuckle is None else "open" if knuckle <= open_knuckle_rad
                      else "closed" if knuckle >= closed_knuckle_rad else "intermediate")
+    probed = None
+    if (probe and knuckle_state == "intermediate" and context.get("attachment_id") == "empty"
+            and getattr(client, "motion_enabled", False)):
+        closed = await client.gripper(KNUCKLE_CLOSED_RAD)
+        probed = {"from_knuckle_rad": knuckle, "knuckle_rad": closed["knuckle_rad"], "message": closed["message"]}
+        if closed["ok"] and closed["knuckle_rad"] is not None and closed["knuckle_rad"] >= closed_knuckle_rad:
+            knuckle, knuckle_state = closed["knuckle_rad"], "closed"
+        else:
+            knuckle_state = "holding"
     empty = knuckle_state in ("open", "closed") and context.get("attachment_id") == "empty"
     if empty:
         facts.append(assertion("gripper_empty", {"robot_id": "robot"}))
     authority = world.authorize_source(source_name, world.catalog.predicates)
-    evidence_id = "bootstrap-"+digest({"joints": list(live["position_rad"]), "knuckle": live["knuckle_rad"],
-                                       "at": live["received_at_monotonic_s"]})
+    evidence_id = "bootstrap-"+digest({"joints": list(live["position_rad"]), "knuckle": knuckle,
+                                       "at": live["received_at_monotonic_s"], "probed": probed})
     world.register_evidence(evidence_id, source=authority, predicates=facts,
                             ttl_s=world.max_evidence_age_s, observed_at=world.clock())
     # Evidence records a measurement; only a committed operation asserts it.
@@ -1685,5 +1698,5 @@ async def bootstrap_robot_facts(world, client, *, source_name="sheppy_client_boo
     world.register_operation(key, snapshot.execution_epoch)
     world.commit_effects(key, [{**fact, "evidence_id": evidence_id} for fact in facts],
                          snapshot.revision, snapshot.execution_epoch, backend_quiescent=True)
-    return {"evidence_id": evidence_id, "facts": facts, "knuckle_rad": live["knuckle_rad"],
-            "knuckle_state": knuckle_state, "gripper_empty_asserted": empty}
+    return {"evidence_id": evidence_id, "facts": facts, "knuckle_rad": knuckle,
+            "knuckle_state": knuckle_state, "gripper_empty_asserted": empty, "probed": probed}
