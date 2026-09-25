@@ -137,7 +137,7 @@ class RuntimeBridge:
                 executor.resources.release(node["id"])
             self._seal_manual_epoch(plan["execution_epoch"])
 
-    async def execute_task(self, *, task_id, task_text, plan=None):
+    async def execute_task(self, *, task_id, task_text, plan=None, first_plan=None):
         if self.manual_nodes:
             raise ContractError("Individual skill execution is already active")
         if task_id != self.runtime.world.snapshot().context["task_id"]:
@@ -146,7 +146,8 @@ class RuntimeBridge:
             return await self.runtime.executor.run_plan(plan)
         if self.reasoner is None:
             raise ContractError("Astra is not configured")
-        return await self.runtime.executor.run_task(task_text, self.reasoner)
+        # first_plan: a local template for a common goal; failures still recover or replan as for Astra's own.
+        return await self.runtime.executor.run_task(task_text, self.reasoner, initial_plan=first_plan)
 
     async def generate_plan(self, request):
         if self.reasoner is None:

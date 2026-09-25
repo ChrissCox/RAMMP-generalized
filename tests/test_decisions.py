@@ -7,7 +7,8 @@ import unittest
 
 from rammp_adl.app import fixture_runtime
 from rammp_adl.contracts import Catalog, strict_loads
-from rammp_adl.decisions import NONE, JevDecider, decide_after_failure, goal_options, load_config
+from rammp_adl.decisions import (NONE, JevConstraintReasoner, JevDecider, decide_after_failure, decide_constraint,
+                                 decide_plan_variants, goal_options, load_config)
 from rammp_adl.intake import goal_candidates, normalize_task
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,16 +25,19 @@ def scripted(answers):
 
     async def transport(url, headers, body, timeout_s):
         seen.append(body)
-        question = next(iter(body["questions"]))
-        answer = answers[question]
-        if isinstance(answer, Exception):
-            raise answer
-        choice, confidence = answer
-        if callable(choice):
-            choice = choice(body["questions"][question]["criteria"])
-        return {"model": "jev-1.13.0", "answers": {question: {"type": "choice", "choice": choice, "confidence": confidence,
-                                                              "probabilities": {choice: confidence}}},
-                "usage": {"input_tokens": 120, "output_tokens": 10}}
+        replies = {}
+        for question, spec in body["questions"].items():
+            answer = answers[question]
+            if isinstance(answer, Exception):
+                raise answer
+            if spec["type"] == "noul":
+                replies[question] = {"type": "noul", "noul": answer}
+                continue
+            choice, confidence = answer
+            if callable(choice):
+                choice = choice(spec["criteria"])
+            replies[question] = {"type": "choice", "choice": choice, "confidence": confidence, "probabilities": {choice: confidence}}
+        return {"model": "jev-1.13.0", "answers": replies, "usage": {"input_tokens": 120, "output_tokens": 10}}
     transport.seen = seen
     return transport
 
@@ -136,7 +140,7 @@ class AfterFailureTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_confident_stop_ends_the_task_without_paying_for_a_replan(self):
         runtime = self.runtime(failures={"c6": ["model_mismatch"]})
-        runtime.executor.decider, _ = decider({"after_failure": ("stop", .95)})
+        runtime.executor.decider, _ = decider({"recovery": ("stop", .95)})
         Reasoner = self.planner([load("cabinet-reobserve"), load("cabinet-resume")])
         result = await runtime.executor.run_task("Open the cabinet", Reasoner(), initial_plan=load("cabinet"))
         self.assertEqual(result.status, "incomplete")
@@ -145,15 +149,93 @@ class AfterFailureTests(unittest.IsolatedAsyncioTestCase):
         decisions = [e for e in runtime.trace.events if e["event"] == "fast_decision"]
         self.assertEqual((decisions[0]["choice"], decisions[0]["confidence"]), ("stop", .95))
 
-    async def test_replan_or_doubt_recovers_exactly_as_without_it(self):
-        for answer in (("replan", .9), ("stop", .6)):
+    async def test_a_confident_local_retry_recovers_without_the_planner(self):
+        runtime = self.runtime(failures={"c6": ["model_mismatch"]})
+        runtime.executor.decider, transport = decider({"recovery": ("retry_from_failed", .9)})
+        Reasoner = self.planner([load("cabinet-reobserve"), load("cabinet-resume")])
+        result = await runtime.executor.run_task("Open the cabinet", Reasoner(), initial_plan=load("cabinet"))
+        self.assertEqual(result.status, "succeeded", result.to_dict())
+        self.assertEqual(Reasoner.calls, 0)                                        # no planner request at all
+        menu = transport.seen[0]["questions"]["recovery"]["criteria"]
+        self.assertEqual(set(menu), {"retry_from_failed", "ask_planner", "stop"})  # a follow failure: no look-again offer
+        recovered = [e for e in runtime.trace.events if e["event"] == "local_recovery"][0]
+        self.assertEqual(recovered["nodes"], ["retry_c6", "retry_c7", "retry_c8"])
+
+    async def test_asking_the_planner_or_doubt_recovers_exactly_as_without_it(self):
+        for answer in (("ask_planner", .9), ("retry_from_failed", .6), ("stop", .6)):
             runtime = self.runtime(failures={"c6": ["model_mismatch"]})
-            runtime.executor.decider, _ = decider({"after_failure": answer})
+            runtime.executor.decider, _ = decider({"recovery": answer})
             Reasoner = self.planner([load("cabinet-reobserve"), load("cabinet-resume")])
             result = await runtime.executor.run_task("Open the cabinet", Reasoner(), initial_plan=load("cabinet"))
             self.assertEqual(result.status, "succeeded", result.to_dict())
             self.assertEqual(Reasoner.calls, 2)
 
+
+class ConstraintAndPlanTests(unittest.IsolatedAsyncioTestCase):
+    DOOR = {"width_m": .27, "height_m": .45, "handle_offsets_m": {"left": .249, "right": .022, "bottom": .14, "top": .31}}
+    BAR = {"major_axis": [0., 0., 1.]}
+
+    async def test_jev_says_what_it_is_the_depth_says_where_the_hinge_is(self):
+        jev, transport = decider({"kind": ("revolute", .97), "opening": ("pull", .6), "swing": ("quarter_turn", .88),
+                                  "slide": ("medium", .4)})
+        proposal, answers = await decide_constraint(jev, label="cabinet door", geometry=self.BAR, door=self.DOOR, threshold=.8)
+        self.assertEqual(len(transport.seen), 1)                                   # one call
+        self.assertEqual({k: proposal[k] for k in ("kind", "hinge_side", "opening", "range", "contact_effort_nm")},
+                         {"kind": "revolute", "hinge_side": "left", "opening": "pull", "range": 1.57, "contact_effort_nm": 5.})
+        self.assertAlmostEqual(proposal["door_width_m"], .249)                     # measured, not proposed
+        self.assertIn("vertical handle", transport.seen[0]["state"])
+        oven = {"width_m": .6, "height_m": .45, "handle_offsets_m": {"left": .3, "right": .3, "bottom": .4, "top": .04}}
+        jev, _ = decider({"kind": ("revolute", .96), "opening": ("pull", .96), "swing": ("part_way", .98), "slide": ("short", .3)})
+        proposal, _ = await decide_constraint(jev, label="oven door", geometry={"major_axis": [0., 1., 0.]}, door=oven, threshold=.8)
+        self.assertEqual((proposal["hinge_side"], proposal["range"]), ("bottom", .79))
+        jev, _ = decider({"kind": ("revolute", .96), "opening": ("push", .95), "swing": ("quarter_turn", .9), "slide": ("short", .3)})
+        proposal, _ = await decide_constraint(jev, label="cellar door", geometry=self.BAR, door=self.DOOR, threshold=.8)
+        self.assertEqual(proposal["opening"], "push")                             # only when Jev is sure of it
+
+    async def test_unsure_of_the_kind_no_door_measured_or_a_failure_leaves_the_proposal_to_astra(self):
+        for answers, door in (({"kind": ("revolute", .7), "opening": ("pull", .95), "swing": ("quarter_turn", .9), "slide": ("short", .9)}, self.DOOR),
+                              ({"kind": ("revolute", .97), "opening": ("pull", .95), "swing": ("quarter_turn", .9), "slide": ("short", .9)}, None),
+                              ({"kind": ("prismatic", .97), "opening": ("slide_right", .3), "swing": ("quarter_turn", .9), "slide": ("long", .9)}, None),
+                              ({"kind": ConnectionError("down"), "opening": ("pull", .9), "swing": ("quarter_turn", .9), "slide": ("short", .9)}, self.DOOR)):
+            jev, _ = decider(answers)
+            astra = SimpleNamespace(calls=[])
+
+            async def propose_constraint(context, entity_id, **kwargs):
+                astra.calls.append(entity_id)
+                return SimpleNamespace(status="OK", proposal={"kind": "revolute"}, detail="astra")
+            astra.propose_constraint = propose_constraint
+            proxy = JevConstraintReasoner(astra, jev)
+            result = await proxy.propose_constraint({}, "handle_1", label="cabinet door", geometry=self.BAR, door=door)
+            self.assertEqual((result.detail, astra.calls), ("astra", ["handle_1"]))
+
+    async def test_a_drawer_is_a_slide_and_the_plan_variants_come_from_one_call(self):
+        jev, _ = decider({"kind": ("prismatic", .95), "opening": ("pull", .93), "swing": ("part_way", .3), "slide": ("medium", .9)})
+        proposal, _ = await decide_constraint(jev, label="kitchen drawer", geometry={"major_axis": [0., 1., 0.]}, door=None, threshold=.8)
+        self.assertEqual((proposal["kind"], proposal["opening"], proposal["range"]), ("prismatic", "pull", .30))
+        jev, transport = decider({"release": .9, "retract": .2})
+        variants, _ = await decide_plan_variants(jev, "open the drawer and keep holding it", "open the part", threshold=.8)
+        self.assertEqual(variants, {"release": True, "retract": False})
+        self.assertEqual(set(transport.seen[0]["questions"]), {"release", "retract"})
+        unsure, _ = decider({"release": .55, "retract": .45})
+        self.assertEqual((await decide_plan_variants(unsure, "open it", "open it", threshold=.8))[0], {"release": True, "retract": True})
+
+
+class TemplateTests(unittest.IsolatedAsyncioTestCase):
+    async def test_the_door_template_is_admitted_and_opens_the_cabinet(self):
+        from rammp_adl.plans import template_for_goal
+        runtime = fixture_runtime(load("cabinet", "context"), root=ROOT, time_scale=.05)
+        context = runtime.world.snapshot().context
+        goal = next(g for g in (load("cabinet", "context").get("goal"),) if g) if load("cabinet", "context").get("goal") else None
+        goal = goal or {"predicate": "constraint_goal_verified", "args": {"constraint_id": "hinge_1", "target_value": 1., "target_unit": "rad"}}
+        plan = template_for_goal(goal, context, runtime.catalog, support_of={"cabinet_handle_1": "cabinet_door_1"})
+        self.assertEqual([n["skill"] for n in plan["nodes"]],
+                         ["move_to_pose", "set_gripper", "move_to_pose", "grasp", "follow_constraint", "release", "move_to_pose"])
+        result = await runtime.executor.run_plan(plan)
+        self.assertEqual(result.status, "succeeded", result.to_dict())
+        no_release = template_for_goal(goal, context, runtime.catalog, support_of={"cabinet_handle_1": "cabinet_door_1"}, release=False)
+        self.assertEqual(no_release["nodes"][-1]["skill"], "follow_constraint")
+        self.assertIsNone(template_for_goal({"predicate": "released", "args": {"entity_id": "x", "support_id": "y"}},
+                                            context, runtime.catalog))
 
 if __name__ == "__main__":
     unittest.main()

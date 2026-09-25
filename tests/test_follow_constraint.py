@@ -126,6 +126,7 @@ class ArcClient(FakeClient):
                 guard.on_progress(progress)
                 trip = guard.check(live=live, trajectory=path, elapsed_s=progress*path.duration_s, now=time.monotonic())
                 if trip is not None:
+                    self.joints = tuple(float(v) for v in path.sample(progress*path.duration_s).position)   # stopped there
                     return {"status": "guard_trip", "message": f"guard tripped ({trip.get('kind')})", "progress": float(progress),
                             "error_code": None, "sent": True, "cancel_requested": False, "final_position_rad": None,
                             "goal_gap_rad": None, "trip": trip}
@@ -431,6 +432,31 @@ class FollowConstraintTests(unittest.TestCase):
         self.assertEqual(client.sent, [])
         attempt = self.store.load("cabinet door")["attempts"][-1]
         self.assertEqual((attempt["status"], attempt["achieved"]), ("cancelled", 0.))
+
+    def test_a_pull_that_stopped_part_way_continues_from_there_when_asked_again(self):
+        client, backend, world = self.arc()
+        client.effort_at = lambda progress: (0., 0., 0., 0., 0., 9. if progress*client.duration >= client.renewal_times[2] else 0., 0.)
+        with self.assertRaises(BackendFailure):
+            self.follow(backend, world, .5)
+        first = backend.constraint_progress["cabinet_door_constraint"]
+        self.assertTrue(.1 < first < .4, first)
+        stopped_at = client.joints
+        client.effort_at = None
+        outcome = self.follow(backend, world, .5)                                # the same absolute goal, asked again
+        data = outcome.evidence[0]["data"]
+        self.assertAlmostEqual(data["achieved"], .5, places=6)
+        self.assertEqual(data["hinge"], {"placed_by": "earlier pull this task"})
+        retry = client.sent[-1]
+        np.testing.assert_allclose(retry.points[0].state.position, stopped_at, atol=1e-9)
+        pivot, axis = np.asarray(HINGE["pivot_base"]), np.asarray(HINGE["axis_base"])/np.linalg.norm(HINGE["axis_base"])
+        ends = [np.asarray(backend._tool_pose(p.state.position)[0])-pivot for p in (retry.points[0], retry.points[-1])]
+        flat = [v-(v @ axis)*axis for v in ends]
+        turned = np.arctan2(np.cross(flat[0], flat[1]) @ axis, flat[0] @ flat[1])
+        self.assertAlmostEqual(abs(turned), .5-first, delta=.01)                 # only what was left
+        self.assertAlmostEqual(backend.constraint_progress["cabinet_door_constraint"], .5, places=6)
+        again = self.follow(backend, world, .5)                                  # nothing left: no motion
+        self.assertEqual(len(client.sent), 2)
+        self.assertEqual(again.status, "succeeded")
 
     def test_a_grip_closing_during_the_pull_stops_it_as_a_slip(self):
         client, backend, world = self.arc()

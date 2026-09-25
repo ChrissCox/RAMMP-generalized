@@ -208,6 +208,9 @@ class SheppyArmBackend:
         self.refine_radius_m, self.refine_max_shift_m, self.refine_max_tilt_deg = .15, .06, 12.
         self.refine_max_yaw_deg, self.part_search_m = 30., .06
         self.last_trajectory = None                     # the last path flown to completion: the way out is the way in
+        # How far this task has moved each constrained part, and the mechanism it moved on: a follow's target is
+        # the part's absolute goal, so a retry after a partial pull continues from there on the same hinge.
+        self.constraint_progress, self.constraint_arcs = {}, {}
         self.events = []
 
     # -- registration --------------------------------------------------------
@@ -1057,7 +1060,9 @@ class SheppyArmBackend:
             raise BackendFailure("stale_state", f"no metric constraint record is installed for {constraint_id}")
         if args["target_unit"] != record["unit"]:
             raise BackendFailure("model_mismatch", "target unit differs from the constraint record")
-        target, unit = float(args["target_value"]), record["unit"]
+        target_total, unit = float(args["target_value"]), record["unit"]
+        already = float(self.constraint_progress.get(constraint_id, 0.))
+        target = target_total-already                   # what is left of the part's goal after earlier pulls this task
         live = self.client.live_joints()
         if live is None:
             raise BackendFailure("stale_state", "no fresh joint state to place the tool")
@@ -1073,8 +1078,19 @@ class SheppyArmBackend:
         position, orientation = self._tool_pose(start)
         import numpy as np
         from .motion.kinematics import quaternion_matrix
-        arc, hinge = self._hinge_at_contact(record, position, orientation)     # what the pull turns about
-        if hinge is not None:
+        if target <= (.02 if unit == "rad" else .005):
+            self.log(f"follow {constraint_id}: already at {already:.3f} of {target_total:.3f} {unit}; nothing left to pull")
+            return self._outcome([assertion("constraint_goal_verified", {"constraint_id": constraint_id,
+                                                                         "target_value": args["target_value"],
+                                                                         "target_unit": args["target_unit"]})],
+                                 data={"target": target_total, "achieved": already, "unit": unit, "steps": [],
+                                       "evidence_basis": "an earlier pull this task already moved the part to its goal"})
+        if constraint_id in self.constraint_arcs:       # continuing: the hinge the earlier pull placed or fitted
+            arc, hinge = self.constraint_arcs[constraint_id], {"placed_by": "earlier pull this task"}
+            self.log(f"follow {constraint_id}: continuing from {already:.3f} {unit} on the earlier pull's mechanism")
+        else:
+            arc, hinge = self._hinge_at_contact(record, position, orientation)     # what the pull turns about
+        if hinge is not None and hinge.get("placed_by") == "close view":
             self.log(f"follow {constraint_id}: hinge placed from the close view, {hinge['moved_mm']:.0f} mm from discovery's, "
                      f"axis turned {hinge['axis_turned_deg']:.1f} deg")
         axis = np.asarray(arc["axis_base"], dtype=float)/np.linalg.norm(arc["axis_base"])
@@ -1212,7 +1228,7 @@ class SheppyArmBackend:
                         raise BackendFailure("slip", detail)
                     status, detail = "tripped", receipt["message"]
                     code = "model_mismatch" if kind == "contact" else "stale_state" if kind == "collision" else "safety_fault"
-                    raise BackendFailure(code, f"stopped at {achieved:.3f} of {target:.3f} {unit}: {receipt['message']}",
+                    raise BackendFailure(code, f"stopped at {already+achieved:.3f} of {target_total:.3f} {unit}: {receipt['message']}",
                                          evidence=[{"evidence_id": f"guard-{uuid.uuid4().hex}", "source": self.mode,
                                                     "predicates": [], "ttl_s": 30.,
                                                     "data": {"trip": checked_copy(trip_info), "receipt": checked_copy(receipt),
@@ -1239,7 +1255,7 @@ class SheppyArmBackend:
                 step["status"] = "succeeded" if step["value"] <= achieved+(.05 if unit == "rad" else .01) else "not_reached"
             if refusal is not None:
                 status, detail = "planning_failed", str(refusal)
-                raise BackendFailure("planning_failed", f"pulled to {achieved:.3f} {unit}; the next waypoint: {refusal}") from refusal
+                raise BackendFailure("planning_failed", f"pulled to {already+achieved:.3f} {unit}; the next waypoint: {refusal}") from refusal
             if scene is not None and record["kind"] == "revolute" and initial_normal is not None:
                 normal, keyframe = await scene.surface_normal()
                 turned = None if normal is None else turn_between(initial_normal, normal, arc["axis_base"])
@@ -1259,7 +1275,7 @@ class SheppyArmBackend:
                                                     f"{last['value']:.2f} rad")
                     raise BackendFailure("goal_unobserved", detail)
                 verified = True
-            scores["local"] = progress_score(achieved=achieved, target=target, grasped=True, verified=verified)
+            scores["local"] = progress_score(achieved=already+achieved, target=target_total, grasped=True, verified=verified)
             reasoner = getattr(scene, "reasoner", None) if self.model_progress_check else None
             if reasoner is not None and frames:
                 try:
@@ -1283,7 +1299,7 @@ class SheppyArmBackend:
             return self._outcome(facts, data={
                 "constraint": {"constraint_id": constraint_id, "kind": record["kind"], "digest": record.get("digest"),
                                "parameters_version": record.get("parameters_version")},
-                "profile_id": profile["profile_id"], "target": target, "achieved": achieved, "unit": unit,
+                "profile_id": profile["profile_id"], "target": target_total, "achieved": already+achieved, "unit": unit,
                 "steps": steps, "hinge": hinge, "pull": {"compliant": compliant, "stretches": pulls, "planned_s": round(planned_s, 3),
                                                          "wrist_lag": lag, "peak_force_n": peak_force,
                                                          "duration_s": sum(pull["duration_s"] for pull in pulls),
@@ -1300,13 +1316,16 @@ class SheppyArmBackend:
             raise
         finally:
             self._release("follow_constraint")
+            self.constraint_progress[constraint_id] = already+achieved
+            if achieved > 0. or constraint_id not in self.constraint_arcs:
+                self.constraint_arcs[constraint_id] = arc
             try:
                 if "local" not in scores:
-                    scores["local"] = progress_score(achieved=achieved, target=target, grasped=self.holding_id == entity_id,
-                                                     verified=verified)
+                    scores["local"] = progress_score(achieved=already+achieved, target=target_total,
+                                                     grasped=self.holding_id == entity_id, verified=verified)
                 progress = {**scores, "measured_turn_rad": ([m["turned_rad"] for m in measured if m["turned_rad"] is not None] or [None])[-1],
                             "verified_locally": verified, "hinge": hinge}
-                record_attempt(record, task_id=context.task_id, target=target, achieved=achieved, status=status,
+                record_attempt(record, task_id=context.task_id, target=target_total, achieved=already+achieved, status=status,
                                detail=detail, peak_effort_nm=peak, trip=trip_info, progress=progress)
                 if self.constraint_store is not None:
                     if status == "succeeded" and frames:

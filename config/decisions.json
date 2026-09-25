@@ -5,5 +5,6 @@
   "api_key_env": "TYPESAFE_API_KEY",
   "timeout_s": 3.0,
   "goal_min_confidence": 0.8,
-  "stop_min_confidence": 0.85
+  "stop_min_confidence": 0.85,
+  "recovery_min_confidence": 0.8
 }

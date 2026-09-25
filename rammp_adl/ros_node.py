@@ -260,6 +260,29 @@ def create_node():
                                        + (", ".join(self.runtime.registry.available_skills) or "none")
                                        + f"; motion armed={self.client.motion_enabled}")
 
+        async def _template_plan(self, runtime, task_text, goal, articulations):
+            """A local plan for a common goal, its open choices put to Jev; None asks Astra as before."""
+            from .contracts import ContractError
+            from .plans import template_for_goal
+            support_of = {item["handle"]: item["surface"]["entity_id"] for item in articulations}
+            variants = {"release": True, "retract": True}
+            decider = getattr(runtime.executor, "decider", None)
+            if decider is not None and goal["predicate"] == "constraint_goal_verified":
+                from .decisions import decide_plan_variants
+                variants, _ = await decide_plan_variants(decider, task_text, "open the part and hold it at its goal",
+                                                         threshold=getattr(runtime.executor, "goal_threshold", .8))
+            plan = template_for_goal(goal, runtime.world.snapshot().context, runtime.catalog, support_of=support_of, **variants)
+            if plan is None:
+                return None
+            try:
+                await asyncio.to_thread(runtime.executor.validator.admit, plan)
+            except ContractError as exc:
+                self.get_logger().info(f"template plan for {goal['predicate']} not admitted ({str(exc)[:120]}); asking astra")
+                return None
+            self.get_logger().info(f"plan from the {goal['predicate']} template: {[node['id'] for node in plan['nodes']]}; "
+                                   f"release {variants['release']}, retract {variants['retract']}")
+            return plan
+
         def _jev_decider(self, runtime):
             """TypeSafe's Jev for fast typed decisions when the operator switched it on; (None, threshold) otherwise."""
             if not self.get_parameter("jev_decisions").value:
@@ -275,6 +298,7 @@ def create_node():
                 self.get_logger().warning(f"jev decisions requested but {config['api_key_env']} is not set; astra decides alone")
                 return None, .85
             runtime.executor.goal_threshold = float(config["goal_min_confidence"])
+            runtime.executor.recovery_threshold = float(config.get("recovery_min_confidence", .8))
             return decider, float(config["stop_min_confidence"])
 
         def _sheppy_runtime(self, catalog):
@@ -503,7 +527,13 @@ def create_node():
             for handle in self.scene.handles():
                 self._intake_phase = "INTAKE_PROPOSING_CONSTRAINT"
                 try:
-                    found = await self.scene.articulate(self.bridge.reasoner, self.runtime.world.snapshot().context,
+                    reasoner = self.bridge.reasoner
+                    decider = getattr(self.runtime.executor, "decider", None)
+                    if decider is not None:
+                        from .decisions import JevConstraintReasoner
+                        reasoner = JevConstraintReasoner(reasoner, decider, log=self.get_logger().info,
+                                                         threshold=getattr(self.runtime.executor, "goal_threshold", .8))
+                    found = await self.scene.articulate(reasoner, self.runtime.world.snapshot().context,
                                                         handle["entity_id"], store=self.constraint_store)
                 except SceneError as exc:
                     self.get_logger().warning(f"no constraint for {handle['entity_id']}: {exc}")
@@ -585,9 +615,10 @@ def create_node():
                     raise
                 self._install_runtime(runtime, reasoner)
                 log.info(f"task {task_id}: goal {json.dumps(goal)}; visible {visibility['visible']}")
+                first_plan = await self._template_plan(runtime, task_text, goal, articulations)
             finally:
                 self._intake_phase = None
-            result = await self.bridge.execute_task(task_id=task_id, task_text=task_text)
+            result = await self.bridge.execute_task(task_id=task_id, task_text=task_text, first_plan=first_plan)
             return {"goal": goal, "visible_entities": visibility["visible"], "bootstrap": bootstrap["facts"],
                     **result.to_dict()}
 

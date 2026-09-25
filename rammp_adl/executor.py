@@ -540,21 +540,28 @@ class DagExecutor:
                     return self._result(task_id, "incomplete", history,
                                       f"{last.failure_code} repeated after a replan: {last.detail}"[:512], replans)
                 repeated = signature
-                # Before a new plan is paid for: a confident fast judgment that no plan can help ends the task here.
-                decider = getattr(self, "decider", None)
-                if decider is not None and getattr(decider, "available", False) and replans < max_replans:
-                    from .decisions import decide_after_failure
-                    stop, decision = await decide_after_failure(
-                        decider, task_text=task_text, skill=plan_node["skill"] if plan_node else "unknown",
-                        failure_code=last.failure_code, detail=last.detail or "", attempt=replans,
-                        threshold=getattr(self, "stop_threshold", .85))
-                    self.trace.emit("fast_decision", question="after_failure", choice=decision.choice,
-                                    confidence=round(decision.confidence, 3), latency_s=round(decision.latency_s, 3),
-                                    error=decision.error)
-                    if stop:
-                        return self._result(task_id, "incomplete", history,
-                                          (f"{last.failure_code}: {last.detail} (stopped without a replan: jev "
-                                           f"{decision.confidence:.2f} that no new plan can help)")[:512], replans)
+            # Before a new plan is paid for: Jev scores the local ways on (retry from the failed step, look again
+            # first), asking the planner, and stopping, all at once. A confident local choice runs if it is admitted.
+            recovery = None
+            decider = getattr(self, "decider", None)
+            if failed and decider is not None and getattr(decider, "available", False) and replans < max_replans:
+                from .decisions import decide_recovery
+                from .plans import recovery_plans
+                offers = recovery_plans(plan, last.node_id, self.world.snapshot().context, self.catalog)
+                choice, decision = await decide_recovery(
+                    decider, task_text=task_text, skill=plan_node["skill"] if plan_node else "unknown",
+                    failure_code=last.failure_code, detail=last.detail or "", attempt=replans,
+                    options={key: text for key, (text, _) in offers.items()},
+                    threshold=getattr(self, "recovery_threshold", .8))
+                self.trace.emit("fast_decision", question="recovery", choice=decision.choice,
+                                confidence=round(decision.confidence, 3), latency_s=round(decision.latency_s, 3),
+                                error=decision.error)
+                if choice == "stop" and decision.confidence >= getattr(self, "stop_threshold", .85):
+                    return self._result(task_id, "incomplete", history,
+                                      (f"{last.failure_code}: {last.detail} (stopped without a replan: jev "
+                                       f"{decision.confidence:.2f} that no new plan can help)")[:512], replans)
+                if choice in offers:
+                    recovery = (choice, plan, last.node_id)
             feedback = {"previous_attempt": {"status": result.status, "reason": result.reason[:512],
                         "last_failed_node": ({"node_id": last.node_id, "skill": plan_node["skill"] if plan_node else None,
                                               "failure_code": last.failure_code, "detail": last.detail[:512]}
@@ -566,5 +573,15 @@ class DagExecutor:
                 self.world.cancel_epoch()
                 self.world.seal_epoch(old)
             plan = None
+            if recovery is not None:
+                from .plans import recovery_plans
+                key, failed_plan, failed_node = recovery
+                candidate = recovery_plans(failed_plan, failed_node, self.world.snapshot().context, self.catalog)[key][1]
+                try:
+                    await asyncio.to_thread(self.validator.admit, candidate)
+                    plan = candidate
+                    self.trace.emit("local_recovery", choice=key, nodes=[node["id"] for node in candidate["nodes"]])
+                except ContractError as exc:
+                    self.trace.emit("local_recovery_rejected", choice=key, detail=str(exc)[:200])
         return self._result(task_id, "incomplete", history,
                           "Task replan budget exhausted; last attempt: " + result.reason[:512], max_replans)
