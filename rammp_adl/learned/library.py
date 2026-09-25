@@ -49,6 +49,15 @@ class SkillLibrary:
         self._write(name, record)
         return version
 
+    def install_seeds(self, folder):
+        """Skills written by people (skills/learned_seeds/*.py) put in the library once, under their file names."""
+        installed = []
+        for path in sorted(Path(folder).glob("*.py")):
+            if self._record(path.stem) is None:
+                self.save(path.stem, path.read_text(), task="seed", author="seed")
+                installed.append(path.stem)
+        return installed
+
     def load(self, name, version=None):
         """The version asked for, else the newest verified, else the newest provisional; retired ones never."""
         record = self._record(name)

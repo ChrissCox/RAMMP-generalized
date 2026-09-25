@@ -637,7 +637,11 @@ def create_node():
         def _skill_library(self):
             from .learned import SkillLibrary
             folder = Path(self.get_parameter("skill_library_dir").value)
-            return SkillLibrary(folder if folder.is_absolute() else Path(self.runtime.catalog.root)/folder)
+            library = SkillLibrary(folder if folder.is_absolute() else Path(self.runtime.catalog.root)/folder)
+            installed = library.install_seeds(Path(self.runtime.catalog.root)/"skills/learned_seeds")
+            if installed:
+                self.get_logger().info(f"skill library: seeds installed {installed}")
+            return library
 
         async def _run_learned(self, runtime, task_id, goal, skill):
             """Run a learned skill against the task's world: each motion call an admitted, guarded plan.

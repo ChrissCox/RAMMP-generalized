@@ -9,8 +9,8 @@ skill's steps as one growing chain), the write-gate-rehearse-run-verify loop
 and the node's entry points (`task --skill`, `--library`, `--learn`, `--dry-run`, `--rehearse-only`). The loop
 and the binding are tested against the fixture runtime; the writer model answered one live request with a
 skill the gate admitted. Also implemented: RSIAgent's parallel candidates, separate verifier, failure lessons and curriculum (below), and
-local perception (OWLv2) behind discovery and grounding. Not yet run on the robot. Not yet built: cuRobo reach in
-the rehearsal.
+local perception (OWLv2) behind discovery and grounding. The rehearsal also plans each move plan-only through cuRobo from where the last
+one ended. Not yet run on the robot.
 
 ## Why
 
@@ -126,7 +126,10 @@ and going home stand in for them, and the operator's choice of practice keeps un
 
 - Local perception (the detector, outlines, a small vision model) behind `find` and verification, so running
   skills is fast and free.
-- cuRobo plan-only reachability in the rehearsal (today it checks admission, not reach).
+- Reach in the rehearsal covers moves to a part's poses; a pull is admitted but its arc is planned only when it runs.
+- Closing a part another task opened: within one task a door is closed on the hinge its opening fitted
+  (`open_then_close`), but a new task starts its part at "closed" from discovery; knowing a part's state across
+  tasks (its angle from the face against the stored closed face) is not built.
 - Unattended curriculum runs: they need automatic resets (a door put back, objects returned), which only
   some tasks have yet.
 - Which model writes skills; how the curriculum is paced; how many verified runs promote a skill.

@@ -481,6 +481,7 @@ class SheppyArmBackend:
                 turned = None if normal is None else turn_between(face["normal"], normal, arc["axis_base"])
                 if turned is not None and abs(face["at"]+turned-moved) < .5:
                     angles, how = [face["at"]+turned], "as seen"
+                    self.constraint_progress[constraint_id] = face["at"]+turned   # where it came to rest
             for index, angle in enumerate(angles):
                 box = door_panel(record, arc, angle, name=f"moved_{constraint_id}_{index}")
                 if box is not None:
@@ -664,6 +665,52 @@ class SheppyArmBackend:
         """Whether following a constraint moved this part after it was measured."""
         return any(abs(float(self.constraint_progress.get(constraint_id, 0.))) > 1e-3
                    for constraint_id, record in self.constraints.items() if record.get("entity_id") == entity_id)
+
+    async def reach_check(self, entity_id, role, start_joints=None):
+        """Plan only: can the arm reach this part's pose from start_joints (the live joints by default)? The end joints.
+
+        What a rehearsal asks of each move: cuRobo's solution from where the previous rehearsed move ended, the
+        moved-part pose as a real move would take it. Nothing is sent; a refusal is BackendFailure planning_failed.
+        """
+        if start_joints is None:
+            live = self.client.live_joints()
+            if live is None:
+                raise BackendFailure("stale_state", "no fresh joint state to rehearse from")
+            start_joints = live["position_rad"]
+        pose = self._metric_pose(self.world.snapshot(), entity_id, role)
+        position, orientation = tuple(pose.position_m), tuple(pose.orientation_xyzw)
+        if role in ("pregrasp", "grasp", "staging"):
+            position, orientation = self._moved_part_pose(entity_id, position, orientation)
+        try:
+            trajectory, _ = await self.client.plan_to_pose(position, orientation, start_joints=list(start_joints))
+        except SheppyClientError as exc:
+            raise BackendFailure("planning_failed", f"{entity_id} {role} is out of reach: {str(exc)[:160]}") from exc
+        return list(trajectory.points[-1].state.position)
+
+    def _moved_part_pose(self, entity_id, position, orientation):
+        """A pose measured on a part before it moved, carried with the part to where it is now.
+
+        A door the arm swung (and the camera saw settle) turns its handle's poses about the fitted hinge by the
+        part's angle; a drawer slides them along its axis. The close view refines the last centimetres as usual.
+        """
+        import numpy as np
+        from .constraints import rotation_about
+        from .motion.kinematics import quaternion_matrix, quaternion_xyzw_from_matrix
+        for constraint_id, moved in self.constraint_progress.items():
+            record, arc = self.constraints.get(constraint_id), self.constraint_arcs.get(constraint_id)
+            if record is None or arc is None or record["entity_id"] != entity_id or abs(moved) < 1e-3:
+                continue
+            axis = np.asarray(arc["axis_base"], dtype=float)
+            axis /= np.linalg.norm(axis)
+            if record["kind"] == "revolute":
+                turn = rotation_about(axis, float(arc.get("direction", 1.))*moved)
+                pivot = np.asarray(arc["pivot_base"], dtype=float)
+                position = pivot+turn @ (np.asarray(position, dtype=float)-pivot)
+                orientation = quaternion_xyzw_from_matrix(turn @ quaternion_matrix(tuple(orientation)))
+            else:
+                position = np.asarray(position, dtype=float)+axis*float(arc.get("direction", 1.))*moved
+            return tuple(float(v) for v in position), tuple(float(v) for v in orientation)
+        return tuple(position), tuple(orientation)
 
     async def _way_out(self, context):
         """Straight back from where the hand is, along its approach axis: the first of way_out_m the planner reaches.
@@ -1040,6 +1087,8 @@ class SheppyArmBackend:
         try:
             target_position, target_orientation, alignment = tuple(pose.position_m), tuple(pose.orientation_xyzw), None
             support, planned, way_out = None, None, None
+            if target["pose_role"] in ("pregrasp", "grasp", "staging"):
+                target_position, target_orientation = self._moved_part_pose(target["entity_id"], target_position, target_orientation)
             if target["pose_role"] == "retract" and self._moved_this_task(target["entity_id"]):
                 # The part moved after its retract pose was measured (a door swung, a drawer slid), so that pose
                 # is where the part used to be and may now lie behind it: back straight out the way the hand went in.
@@ -1402,6 +1451,10 @@ class SheppyArmBackend:
         target_total, unit = float(args["target_value"]), record["unit"]
         already = float(self.constraint_progress.get(constraint_id, 0.))
         target = target_total-already                   # what is left of the part's goal after earlier pulls this task
+        # A goal short of where the part is now (closing a door this task opened) follows the same mechanism the
+        # other way: below, the arc's direction is reversed and target, achieved and the steps are distances moved.
+        backward = target < -(.02 if unit == "rad" else .005)
+        sign = -1. if backward else 1.
         live = self.client.live_joints()
         if live is None:
             raise BackendFailure("stale_state", "no fresh joint state to place the tool")
@@ -1417,7 +1470,7 @@ class SheppyArmBackend:
         position, orientation = self._tool_pose(start)
         import numpy as np
         from .motion.kinematics import quaternion_matrix
-        if target <= (.02 if unit == "rad" else .005):
+        if abs(target) <= (.02 if unit == "rad" else .005):
             self.log(f"follow {constraint_id}: already at {already:.3f} of {target_total:.3f} {unit}; nothing left to pull")
             return self._outcome([assertion("constraint_goal_verified", {"constraint_id": constraint_id,
                                                                          "target_value": args["target_value"],
@@ -1429,6 +1482,9 @@ class SheppyArmBackend:
             self.log(f"follow {constraint_id}: continuing from {already:.3f} {unit} on the earlier pull's mechanism")
         else:
             arc, hinge = self._hinge_at_contact(record, position, orientation)     # what the pull turns about
+        if backward:
+            arc, target = {**arc, "direction": -float(arc.get("direction", 1.))}, -target
+            self.log(f"follow {constraint_id}: from {already:.3f} back to {target_total:.3f} {unit}, the same mechanism reversed")
         if hinge is not None and hinge.get("placed_by") == "close view":
             self.log(f"follow {constraint_id}: hinge placed from the close view, {hinge['moved_mm']:.0f} mm from discovery's, "
                      f"axis turned {hinge['axis_turned_deg']:.1f} deg")
@@ -1588,7 +1644,7 @@ class SheppyArmBackend:
                         continue
                     status, detail = "tripped", receipt["message"]
                     code = "model_mismatch" if kind == "contact" else "stale_state" if kind == "collision" else "safety_fault"
-                    raise BackendFailure(code, f"stopped at {already+achieved:.3f} of {target_total:.3f} {unit}: {receipt['message']}",
+                    raise BackendFailure(code, f"stopped at {already+sign*achieved:.3f} of {target_total:.3f} {unit}: {receipt['message']}",
                                          evidence=[{"evidence_id": f"guard-{uuid.uuid4().hex}", "source": self.mode,
                                                     "predicates": [], "ttl_s": 30.,
                                                     "data": {"trip": checked_copy(trip_info), "receipt": checked_copy(receipt),
@@ -1617,7 +1673,7 @@ class SheppyArmBackend:
                 step["status"] = "succeeded" if step["value"] <= achieved+(.05 if unit == "rad" else .01) else "not_reached"
             if refusal is not None:
                 status, detail = "planning_failed", str(refusal)
-                raise BackendFailure("planning_failed", f"pulled to {already+achieved:.3f} {unit}; the next waypoint: {refusal}") from refusal
+                raise BackendFailure("planning_failed", f"pulled to {already+sign*achieved:.3f} {unit}; the next waypoint: {refusal}") from refusal
             if scene is not None and record["kind"] == "revolute" and initial_normal is not None:
                 normal, keyframe = await scene.surface_normal()
                 turned = None if normal is None else turn_between(initial_normal, normal, arc["axis_base"])
@@ -1637,7 +1693,7 @@ class SheppyArmBackend:
                                                     f"{last['value']:.2f} rad")
                     raise BackendFailure("goal_unobserved", detail)
                 verified = True
-            scores["local"] = progress_score(achieved=already+achieved, target=target_total, grasped=True, verified=verified)
+            scores["local"] = progress_score(achieved=achieved, target=target, grasped=True, verified=verified)
             reasoner = getattr(scene, "reasoner", None) if self.model_progress_check else None
             if reasoner is not None and frames:
                 try:
@@ -1661,7 +1717,7 @@ class SheppyArmBackend:
             return self._outcome(facts, data={
                 "constraint": {"constraint_id": constraint_id, "kind": record["kind"], "digest": record.get("digest"),
                                "parameters_version": record.get("parameters_version")},
-                "profile_id": profile["profile_id"], "target": target_total, "achieved": already+achieved, "unit": unit,
+                "profile_id": profile["profile_id"], "target": target_total, "achieved": already+sign*achieved, "unit": unit,
                 "steps": steps, "hinge": hinge, "pull": {"compliant": compliant, "stretches": pulls, "planned_s": round(planned_s, 3),
                                                          "refits": refits,
                                                          "wrist_lag": lag, "peak_force_n": peak_force,
@@ -1681,16 +1737,16 @@ class SheppyArmBackend:
             self._release("follow_constraint")
             if initial_normal is not None:
                 self.constraint_faces.setdefault(constraint_id, {"normal": [float(v) for v in initial_normal], "at": already})
-            self.constraint_progress[constraint_id] = already+achieved
+            self.constraint_progress[constraint_id] = already+sign*achieved
             if achieved > 0. or constraint_id not in self.constraint_arcs:
-                self.constraint_arcs[constraint_id] = arc
+                self.constraint_arcs[constraint_id] = {**arc, "direction": sign*float(arc.get("direction", 1.))}
             try:
                 if "local" not in scores:
-                    scores["local"] = progress_score(achieved=already+achieved, target=target_total,
+                    scores["local"] = progress_score(achieved=achieved, target=target,
                                                      grasped=self.holding_id == entity_id, verified=verified)
                 progress = {**scores, "measured_turn_rad": ([m["turned_rad"] for m in measured if m["turned_rad"] is not None] or [None])[-1],
                             "verified_locally": verified, "hinge": hinge, "refits": refits}
-                record_attempt(record, task_id=context.task_id, target=target_total, achieved=already+achieved, status=status,
+                record_attempt(record, task_id=context.task_id, target=target_total, achieved=already+sign*achieved, status=status,
                                detail=detail, peak_effort_nm=peak, trip=trip_info, progress=progress)
                 if self.constraint_store is not None:
                     if status == "succeeded" and frames:

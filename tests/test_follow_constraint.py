@@ -601,6 +601,51 @@ class FollowConstraintTests(BackendCase):
         self.assertEqual(failed.exception.code, "slip")
         self.assertIsNone(backend.holding_id)
 
+    def test_a_door_this_task_opened_is_closed_on_the_same_hinge_and_its_handle_poses_move_with_it(self):
+        client, backend, world = self.arc()
+        shut_tool = np.asarray(backend._tool_pose(GRASP_JOINTS)[0])
+        self.assertEqual(self.follow(backend, world, .9).status, "succeeded")
+        arc = dict(backend.constraint_arcs["cabinet_door_constraint"])
+        moved, _ = backend._moved_part_pose("handle_1", tuple(shut_tool), (0., 0., 0., 1.))
+        open_tool = np.asarray(backend._tool_pose(client.joints)[0])
+        self.assertLess(np.linalg.norm(np.asarray(moved)-open_tool), .005)       # the grasp measured shut is where the handle is now
+        closed = self.follow(backend, world, 0.)
+        self.assertEqual(closed.status, "succeeded")
+        data = closed.evidence[0]["data"]
+        self.assertAlmostEqual(data["achieved"], 0., places=6)
+        self.assertAlmostEqual(backend.constraint_progress["cabinet_door_constraint"], 0., places=6)
+        back = np.asarray(backend._tool_pose(client.sent[-1].points[-1].state.position)[0])
+        self.assertLess(np.linalg.norm(back-shut_tool), .005)                    # the hand is back where it gripped the shut door
+        radii = self.on_the_arc(client.sent[-1], backend)
+        self.assertLess(radii.max()-radii.min(), .004)                          # on the door's circle all the way back
+        self.assertEqual(backend.constraint_arcs["cabinet_door_constraint"]["direction"], arc["direction"])
+        unmoved, _ = backend._moved_part_pose("handle_1", tuple(shut_tool), (0., 0., 0., 1.))
+        np.testing.assert_allclose(unmoved, shut_tool, atol=1e-6)
+
+    def test_a_rehearsal_plans_each_move_from_where_the_last_ended_and_refuses_what_is_out_of_reach(self):
+        from types import SimpleNamespace
+        from rammp_adl.learned import run_skill
+        from rammp_adl.learned.host import DryRunHost
+        from rammp_adl.motion.kinematics import quaternion_xyzw_from_matrix
+        client, backend, world = self.arc()
+        start = client.joints
+        position, orientation = backend._tool_pose(GRASP_JOINTS)
+        plain = lambda values: tuple(float(v) for v in values)
+        self.install_pose(world, "grasp", plain(position), plain(orientation))   # one pose: a second would re-revise the entity
+        runtime = SimpleNamespace(world=world, backend=backend, catalog=self.catalog, validator=SimpleNamespace(admit=lambda plan: None))
+        source = 'def run(robot):\n    """Reach the handle twice."""\n    robot.move_to("handle_1", "grasp")\n    robot.move_to("handle_1", "grasp")\n'
+        dry = DryRunHost(runtime)
+        result = asyncio.run(run_skill(source, {}, dry))
+        self.assertEqual(result.status, "succeeded", result.to_dict())
+        self.assertEqual(len(client.plans), 2)
+        self.assertEqual(client.plans[0]["start"], tuple(start))
+        self.assertEqual(client.plans[1]["start"], client.ends[0])              # chained, not from the live joints again
+        self.assertEqual(client.sent, [])                                       # a rehearsal: nothing flown
+        client.reach = lambda at, rotation: False
+        refused = asyncio.run(run_skill(source, {}, DryRunHost(runtime)))
+        self.assertEqual(refused.status, "failed")
+        self.assertIn("out of reach", refused.error)
+
     def install_pose(self, world, role, position, orientation=(0., 0., 0., 1.)):
         from rammp_adl.world import MetricPose
         identities = world.snapshot().identities()

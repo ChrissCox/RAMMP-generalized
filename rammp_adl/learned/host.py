@@ -227,9 +227,12 @@ class ExecutorHost(_Binding):
 class DryRunHost(_Binding):
     """Moves nothing: each motion step joins one chain the validator must admit whole; state is predicted."""
 
-    def __init__(self, runtime, **options):
+    def __init__(self, runtime, *, reach=True, **options):
         super().__init__(runtime, **options)
         self.held, self.refusals = None, []
+        # With a planner behind the backend, each move is also planned (not flown) from where the last one ended.
+        self.reach = reach and hasattr(runtime.backend, "reach_check")
+        self.joints = None
 
     async def call(self, name, args):
         self._check_abort()
@@ -255,6 +258,13 @@ class DryRunHost(_Binding):
         except ContractError as exc:
             self.refusals.append(str(exc))
             raise PrimitiveFailed(f"{node['skill']} would be refused: {exc}"[:600]) from exc
+        if self.reach and name == "move_to" and node["args"]["target"]["pose_role"] != "retract":
+            from ..handlers import BackendFailure
+            try:
+                self.joints = await self.runtime.backend.reach_check(args["object"], node["args"]["target"]["pose_role"], self.joints)
+            except BackendFailure as exc:
+                self.refusals.append(str(exc))
+                raise PrimitiveFailed(f"move_to would fail: {exc}"[:600]) from exc
         self.steps.append(node)
         if name == "grasp":
             self.held = args["object"]

@@ -276,6 +276,20 @@ def run(robot):
                          result.to_dict())
         self.assertTrue(runtime.world.goal_satisfied())
 
+    def test_seed_skills_compose_open_then_close_puts_the_door_back(self):
+        with tempfile.TemporaryDirectory() as folder:
+            library = SkillLibrary(folder)
+            self.assertEqual(library.install_seeds(self.ROOT/"skills/learned_seeds"),
+                             ["close_by_handle", "open_by_handle", "open_then_close"])
+            self.assertEqual(library.install_seeds(self.ROOT/"skills/learned_seeds"), [])     # once
+            runtime = self.runtime()
+            source = library.load("open_then_close")["source"]
+            dry = self.host(runtime, "dry")
+            rehearsal = run(run_skill(source, {"amount": 1.0}, dry, library=library))
+            self.assertEqual(rehearsal.status, "succeeded", rehearsal.to_dict())
+            self.assertEqual([step["skill"] for step in dry.steps].count("follow_constraint"), 2)
+            self.assertEqual([c["use"] for c in rehearsal.calls if "use" in c], ["open_by_handle", "close_by_handle"])
+
     def test_a_cancel_ends_the_skill_before_its_next_step(self):
         import asyncio as aio
 
