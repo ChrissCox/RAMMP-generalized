@@ -498,6 +498,53 @@ class FollowConstraintTests(unittest.TestCase):
             self.follow(backend, world, .2)
         self.assertEqual(caught.exception.code, "stale_state")
 
+    def install_pose(self, world, role, position, orientation=(0., 0., 0., 1.)):
+        from rammp_adl.world import MetricPose
+        identities = world.snapshot().identities()
+        authority = world.authorize_source("test_observation", self.catalog.predicates)
+        pose = MetricPose("handle_1", role, tuple(position), tuple(orientation), tuple([0.]*36), world.clock(), "base_link",
+                          identities["entity:handle_1"]+1, identities["calibration_id"], identities["base_epoch"], f"pose-{role}", 60.)
+        world.register_evidence(f"pose-{role}", source=authority, ttl_s=60., observed_at=world.clock(),
+                                predicates=[{"predicate": "pose_valid", "validity": "true", "args": {"entity_id": "handle_1", "pose_role": role}}])
+        world.update_metric_pose(pose, source=authority)
+
+    def retract(self, backend, world):
+        args = {"target": {"entity_id": "handle_1", "pose_role": "retract"}, "profile_id": "bench_transit"}
+        return asyncio.run(backend.move_to_pose(args, execution_context(world)))
+
+    def test_after_the_door_swung_the_hand_backs_straight_out_not_to_where_the_handle_was(self):
+        client, backend, world = self.arc()
+        backend.at_contact = True                                                # parked on the handle by the grasp
+        self.assertEqual(self.follow(backend, world, .5).status, "succeeded")
+        release = {"entity_id": "handle_1", "support_id": "cabinet_door_surface", "profile_id": "bench_gripper"}
+        self.assertEqual(asyncio.run(backend.release(release, execution_context(world))).status, "succeeded")
+        self.install_pose(world, "retract", (.5, .1, .3))                        # measured before the door swung
+        position, orientation = backend._tool_pose(client.joints)
+        approach = quaternion_matrix(orientation)[:, 2]
+        full = np.asarray(position)-approach*.10
+        client.reach = lambda at, rotation: np.linalg.norm(at-full) > 1e-6       # the full standoff is out of reach
+        data = self.retract(backend, world).evidence[0]["data"]
+        self.assertEqual(data["way_out"]["back_m"], .07)                          # the next way out the planner reaches
+        self.assertEqual(len(data["way_out"]["refused"]), 1)
+        np.testing.assert_allclose(data["commanded"]["position_m"], np.asarray(position)-approach*.07, atol=1e-9)
+        np.testing.assert_allclose(data["commanded"]["orientation_xyzw"], orientation, atol=1e-12)
+        self.assertEqual(client.plans[-1]["position"], tuple(data["commanded"]["position_m"]))   # flown as planned, not planned again
+        self.assertEqual(self.guards[-1]["exclusions"][0][1], .10)               # leaving the handle exempts what the fingers were beside
+        client.reach = lambda at, rotation: False
+        backend.at_contact = False
+        with self.assertRaises(BackendFailure) as refused:
+            self.retract(backend, world)
+        self.assertEqual(refused.exception.code, "planning_failed")
+
+    def test_a_part_that_has_not_moved_is_left_to_its_measured_retract_pose(self):
+        client = TrackingClient(knuckle=.01)
+        backend, world = self.backend(client)
+        backend.holding_id = None
+        self.install_pose(world, "retract", (.5, .1, .3))
+        data = self.retract(backend, world).evidence[0]["data"]
+        self.assertIsNone(data["way_out"])
+        self.assertEqual(client.targets, [((.5, .1, .3), (0., 0., 0., 1.))])
+
     def test_geometry_establishes_contact_readiness_and_attached_release(self):
         backend, world = self.backend(TrackingClient(knuckle=.45))
         geometry = SheppyGeometry(backend)

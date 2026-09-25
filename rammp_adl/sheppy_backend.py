@@ -371,8 +371,8 @@ class SheppyArmBackend:
         return tuple(float(v) for v in tool[:3, 3]), tuple(float(v) for v in quaternion_xyzw_from_matrix(tool[:3, :3]))
 
     async def _step_to(self, position, orientation, context, *, safety_class, exclusions=(), tool_exclusion_m=0., touch_nm=None,
-                       announce=None):
-        """One planned, gated, guarded move to a tool pose; the receipt or a failure."""
+                       announce=None, planned=None):
+        """One planned, gated, guarded move to a tool pose; the receipt or a failure. planned: a plan already made to it."""
         if context.cancel_event.is_set():
             raise BackendFailure("cancelled", "execution epoch was revoked")
         if not await self.client.stationary(duration_s=self.stationary_duration_s):
@@ -388,18 +388,10 @@ class SheppyArmBackend:
                 if self.contact_support is not None:
                     point, normal = self._support_in_base(tool_position, tool_orientation)
                     exclusions.append(self._surface_exclusion(point, normal, tool_position))
-        try:
-            trajectory, planning = await self.client.plan_to_pose(position, orientation, cancel_event=context.cancel_event)
-        except SheppyClientError as exc:
-            # The planner refuses a start it judges to be in collision
-            # (cuRobo INVALID_START_STATE through RAMMP-CuRobo's "STATUS: error" text).
-            # TODO: confirm against planner that the status name reaches the message unchanged.
-            if "START" not in str(exc).upper() or not await self._back_out(context, exclusions):
-                raise BackendFailure("planning_failed", str(exc)) from exc
-            try:
-                trajectory, planning = await self.client.plan_to_pose(position, orientation, cancel_event=context.cancel_event)
-            except SheppyClientError as again:
-                raise BackendFailure("planning_failed", f"after backing out: {again}") from again
+        if planned is not None:
+            trajectory, planning = planned
+        else:
+            trajectory, planning = await self._plan_step(position, orientation, context, exclusions)
         trajectory = self._scaled(trajectory, safety_class)
         options = {"exclusions": exclusions, "tool_exclusion_m": tool_exclusion_m}
         if touch_nm is not None:
@@ -444,6 +436,22 @@ class SheppyArmBackend:
                                  receipt["message"])
         self.last_trajectory = trajectory
         return trajectory, planning, receipt, guard
+
+    async def _plan_step(self, position, orientation, context, exclusions):
+        """The planner's path to a tool pose; a start it calls in collision is backed out of once first."""
+        try:
+            trajectory, planning = await self.client.plan_to_pose(position, orientation, cancel_event=context.cancel_event)
+        except SheppyClientError as exc:
+            # The planner refuses a start it judges to be in collision
+            # (cuRobo INVALID_START_STATE through RAMMP-CuRobo's "STATUS: error" text).
+            # TODO: confirm against planner that the status name reaches the message unchanged.
+            if "START" not in str(exc).upper() or not await self._back_out(context, exclusions):
+                raise BackendFailure("planning_failed", str(exc)) from exc
+            try:
+                trajectory, planning = await self.client.plan_to_pose(position, orientation, cancel_event=context.cancel_event)
+            except SheppyClientError as again:
+                raise BackendFailure("planning_failed", f"after backing out: {again}") from again
+        return trajectory, planning
 
     def _surface_exclusion(self, point, normal, target):
         """A ball that holds the measured surface under the target and at most surface_protrusion_m in front of it.
@@ -597,6 +605,38 @@ class SheppyArmBackend:
         rotation = quaternion_matrix(tuple(orientation))
         self.contact_support = (rotation.T @ (np.asarray(support[0], dtype=float)-np.asarray(position)),
                                 rotation.T @ np.asarray(support[1], dtype=float))
+
+    #: How far the hand backs out along its own approach axis from a part that moved, longest first:
+    #: the measured standoff, then shorter ways out when the planner cannot reach it.
+    way_out_m = (.10, .07, .04)
+
+    def _moved_this_task(self, entity_id):
+        """Whether following a constraint moved this part after it was measured."""
+        return any(abs(float(self.constraint_progress.get(constraint_id, 0.))) > 1e-3
+                   for constraint_id, record in self.constraints.items() if record.get("entity_id") == entity_id)
+
+    async def _way_out(self, context):
+        """Straight back from where the hand is, along its approach axis: the first of way_out_m the planner reaches.
+
+        Returns the tool pose, the plan to it, and what was chosen. Only plans; nothing moves here.
+        """
+        import numpy as np
+        from .motion.kinematics import quaternion_matrix
+        live = self.client.live_joints()
+        if live is None:
+            raise BackendFailure("stale_state", "no fresh joint state to place the tool")
+        position, orientation = self._tool_pose(live["position_rad"])
+        approach = quaternion_matrix(tuple(orientation))[:, 2]
+        refused = []
+        for back in self.way_out_m:
+            target = tuple(float(v) for v in np.asarray(position, dtype=float)-approach*back)
+            try:
+                plan = await self.client.plan_to_pose(target, tuple(orientation), cancel_event=context.cancel_event)
+            except SheppyClientError as exc:
+                refused.append(f"{back*100:.0f} cm: {str(exc)[:80]}")
+                continue
+            return target, tuple(orientation), plan, {"back_m": back, "refused": refused}
+        raise BackendFailure("planning_failed", "no way straight back out of the part: "+"; ".join(refused))
 
     async def _back_out(self, context, exclusions=()):
         """Retrace the last completed path, empty-handed, from where it ended; True if the arm is now back at its start."""
@@ -765,7 +805,11 @@ class SheppyArmBackend:
         await self._own("move_to_pose", context)
         try:
             target_position, target_orientation, alignment = tuple(pose.position_m), tuple(pose.orientation_xyzw), None
-            support = None
+            support, planned, way_out = None, None, None
+            if target["pose_role"] == "retract" and self._moved_this_task(target["entity_id"]):
+                # The part moved after its retract pose was measured (a door swung, a drawer slid), so that pose
+                # is where the part used to be and may now lie behind it: back straight out the way the hand went in.
+                target_position, target_orientation, planned, way_out = await self._way_out(context)
             if target["pose_role"] == "grasp":
                 # The close view at the standoff places the grasp when it can find the part; the model aligns
                 # only when it cannot, and the close view then still sets the depth.
@@ -789,7 +833,7 @@ class SheppyArmBackend:
                     exclusions.append(self._surface_exclusion(*support, target_position))
             trajectory, planning, receipt, _ = await self._step_to(target_position, target_orientation, context,
                                                                    safety_class="contact" if target["pose_role"] == "grasp" else "transit",
-                                                                   exclusions=exclusions, announce="move_to_pose")
+                                                                   exclusions=exclusions, announce="move_to_pose", planned=planned)
             previous, self.current_pose = self.current_pose, (target["entity_id"], target["pose_role"])
             self.at_contact = target["pose_role"] == "grasp"
             if self.at_contact:
@@ -812,7 +856,7 @@ class SheppyArmBackend:
                            "position_m": list(pose.position_m), "orientation_xyzw": list(pose.orientation_xyzw),
                            "evidence_id": pose.evidence_id},
                 "commanded": {"position_m": list(target_position), "orientation_xyzw": list(target_orientation)},
-                "alignment": alignment,
+                "alignment": alignment, "way_out": way_out,
                 "profile_id": profile["profile_id"], "planning": planning,
                 "trajectory": {"digest": trajectory.digest, "duration_s": trajectory.duration_s,
                                "points": len(trajectory.points), "provenance": trajectory.provenance},
