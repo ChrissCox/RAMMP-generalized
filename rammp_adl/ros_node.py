@@ -272,8 +272,9 @@ def create_node():
             variants = {"release": True, "retract": True}
             decider = getattr(runtime.executor, "decider", None)
             if decider is not None and goal["predicate"] == "constraint_goal_verified":
-                from .decisions import decide_plan_variants
-                variants, _ = await decide_plan_variants(decider, task_text, "open the part and hold it at its goal",
+                from .decisions import constraint_goal_text, decide_plan_variants
+                variants, _ = await decide_plan_variants(decider, task_text,
+                                                         constraint_goal_text(goal, runtime.world.snapshot().context),
                                                          threshold=getattr(runtime.executor, "goal_threshold", .8))
             plan = template_for_goal(goal, runtime.world.snapshot().context, runtime.catalog, support_of=support_of, **variants)
             if plan is None:

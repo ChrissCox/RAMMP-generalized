@@ -7,8 +7,8 @@ import unittest
 
 from rammp_adl.app import fixture_runtime
 from rammp_adl.contracts import Catalog, strict_loads
-from rammp_adl.decisions import (NONE, JevConstraintReasoner, JevDecider, decide_after_failure, decide_constraint,
-                                 decide_plan_variants, goal_options, load_config)
+from rammp_adl.decisions import (NONE, JevConstraintReasoner, JevDecider, constraint_goal_text, decide_after_failure,
+                                 decide_constraint, decide_plan_variants, goal_options, load_config)
 from rammp_adl.intake import goal_candidates, normalize_task
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -114,6 +114,17 @@ class GoalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((goal["predicate"], goal["args"]["target_value"]),
                          ("constraint_goal_verified", round(float(self.context["constraints"][0]["minimum"]), 3)))
         self.assertEqual(astra.calls, [])
+
+    async def test_the_plan_choices_are_asked_about_closing_when_the_goal_is_shut(self):
+        options = goal_options(self.context, self.candidates)
+        constraint_id = self.context["constraints"][0]["constraint_id"]
+        shut, fully = options[f"move_{constraint_id}_shut"][1], options[f"move_{constraint_id}_fully"][1]
+        self.assertTrue(constraint_goal_text(shut, self.context).startswith("close the part"))
+        self.assertTrue(constraint_goal_text(fully, self.context).startswith("open the part"))
+        jev, transport = decider({"release": ("yes", .95), "retract": ("yes", .9)})
+        variants, _ = await decide_plan_variants(jev, "close the cabinet", constraint_goal_text(shut, self.context), threshold=.8)
+        self.assertEqual(variants, {"release": True, "retract": True})
+        self.assertIn("The arm will close the part", transport.seen[0]["state"])
 
     async def test_doubt_none_of_these_or_a_failure_asks_astra_as_before(self):
         astra_goal = {"predicate": "holding", "args": {"entity_id": "cabinet_handle_1"}}

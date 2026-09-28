@@ -327,6 +327,14 @@ class JevConstraintReasoner:
                                                        images=images, door=door, **kwargs)
 
 
+def constraint_goal_text(goal, context):
+    """What the arm will do for a constraint goal, in words: open the part, or bring it back shut."""
+    constraint = next((c for c in context.get("constraints", ()) if c["constraint_id"] == goal["args"]["constraint_id"]), None)
+    if constraint is not None and float(goal["args"]["target_value"]) <= float(constraint["minimum"]):
+        return f"{'close' if constraint['kind'] == 'revolute' else 'slide in'} the part, back to where it rests shut"
+    return "open the part and hold it at its goal"
+
+
 async def decide_plan_variants(decider, task_text, goal_text, *, threshold):
     """What a plan template leaves open, in one call: let go when done? move away afterwards? Defaults when unsure."""
     answers = await decider.ask(f"Request to a robot arm: {task_text.strip()}\nThe arm will {goal_text}.", {
