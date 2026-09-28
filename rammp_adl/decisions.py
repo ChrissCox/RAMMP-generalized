@@ -145,7 +145,8 @@ def goal_options(context, candidates):
     """Every goal this scene can bind, keyed, with what each means in words: {key: (description, goal)}.
 
     Targets come from the scene: a hinge or slide is opened to its installed
-    range, or halfway; nothing numeric is left for the model to choose freely.
+    range, or halfway, or brought back to where it rests shut; nothing numeric
+    is left for the model to choose freely.
     """
     options = {}
     entities = [e for e in context["entities"] if e.get("entity_id") and e["entity_id"] != "robot"]
@@ -159,6 +160,12 @@ def goal_options(context, candidates):
                     f"{verb} {how}: move the part the {label} belongs to by {value} {unit}, as far as {'it goes' if share == 1. else 'half of that'}",
                     {"predicate": "constraint_goal_verified",
                      "args": {"constraint_id": constraint["constraint_id"], "target_value": value, "target_unit": unit}})
+            shut = round(float(constraint["minimum"]), 3)
+            options[f"move_{constraint['constraint_id']}_shut"] = (
+                f"{'close' if constraint['kind'] == 'revolute' else 'slide in'}: bring the part the {label} belongs to back "
+                f"to {shut} {unit}, where it rests shut, from wherever it is now",
+                {"predicate": "constraint_goal_verified",
+                 "args": {"constraint_id": constraint["constraint_id"], "target_value": shut, "target_unit": unit}})
     for entity in entities:
         roles = set(entity.get("pose_roles") or ())
         if "holding" in candidates and "grasp" in roles:

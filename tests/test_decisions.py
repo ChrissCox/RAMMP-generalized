@@ -92,6 +92,9 @@ class GoalTests(unittest.IsolatedAsyncioTestCase):
         fully = next(goal for key, (_, goal) in options.items() if key.endswith("_fully"))
         self.assertEqual(fully["args"]["target_value"], round(float(constraint["maximum"]), 3))
         self.assertEqual(fully["args"]["constraint_id"], constraint["constraint_id"])
+        description, shut = options[f"move_{constraint['constraint_id']}_shut"]          # a close task has its own outcome
+        self.assertEqual(shut["args"]["target_value"], round(float(constraint["minimum"]), 3))
+        self.assertTrue(description.startswith("close"))
         from rammp_adl.intake import validate_goal
         for key, (description, goal) in options.items():
             if goal is not None:
@@ -102,6 +105,14 @@ class GoalTests(unittest.IsolatedAsyncioTestCase):
         astra = Astra()
         goal = await normalize_task(astra, self.catalog, self.context, "open the cabinet", available_skills=SKILLS, decider=jev)
         self.assertEqual(goal["predicate"], "constraint_goal_verified")
+        self.assertEqual(astra.calls, [])
+
+    async def test_closing_is_an_outcome_jev_can_pick_without_astra(self):
+        jev, _ = decider({"goal": (lambda criteria: next(k for k in criteria if k.endswith("_shut")), .92)})
+        astra = Astra()
+        goal = await normalize_task(astra, self.catalog, self.context, "close the cabinet", available_skills=SKILLS, decider=jev)
+        self.assertEqual((goal["predicate"], goal["args"]["target_value"]),
+                         ("constraint_goal_verified", round(float(self.context["constraints"][0]["minimum"]), 3)))
         self.assertEqual(astra.calls, [])
 
     async def test_doubt_none_of_these_or_a_failure_asks_astra_as_before(self):
