@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "status": "passed",
-  "setupHash": "sha256:80047040e8a220c63875c453f3614b45d45d3dfa804b38ce1c62a1dc32644530",
-  "generatedAt": "2026-09-23T18:26:10.355Z",
+  "setupHash": "sha256:60a713dfcadd65679fe43e74adcf2d797497f49894a57bf5a415caf9d7eedf3b",
+  "generatedAt": "2026-09-28T15:41:12.051Z",
   "checks": [
     {
       "id": "setup_schema",
@@ -25,29 +25,31 @@
     {
       "id": "metric_capture",
       "status": "passed",
-      "message": "Step evaluate captures score.",
+      "message": "Step evaluate captures cycle.",
       "evidence": {}
     },
     {
       "id": "metric_tool_readiness",
       "status": "passed",
-      "message": "Metric tool evaluation.run emitted primary METRIC score=35.",
+      "message": "Metric tool evaluation.run emitted primary METRIC cycle=54.",
       "evidence": {
         "toolId": "evaluation.run",
         "exitCode": 0,
         "timedOut": false,
         "primaryMetric": {
-          "name": "score",
-          "value": 35
+          "name": "cycle",
+          "value": 54
         },
         "secondaryMetricNames": [
+          "close_score",
+          "door_back",
           "duration_s",
-          "followed_fraction",
+          "open_score",
           "safety_fault",
           "task_replans"
         ],
-        "outputSummary": "{\"at_utc\": \"2026-09-23T18:26:10Z\", \"tier\": \"hardware\", \"score\": 35.0, \"status\": \"incomplete\", \"reason\": \"stale_state repeated after a replan: guard tripped (collision); goal cancelled, driver holds\", \"stages\": {\"intake\": true, \"planned\": true, \"standoff\": true, \"at_handle\": false, \"grasped\": false, \"released\": false}, \"followed_fraction\": 0.0, \"safety_fault\": false, \"task_replans\": 1, \"first_failure\": {\"node_id\": \"reach_handle\", \"skill\": \"move_to_pose\", \"failure_code\": \"stale_state\", \"detail\": \"guard tripped (collision); goal cancelled, driver holds\"}, \"operator\": \"standing GO\", \"duration_s\": 95.3, \"phases\": [\"INTAKE_STARTING\", \"INTAKE_DISCOVERING\", \"INTAKE_PROPOSING_CONSTRAINT\", \"INTAKE_BOOTSTRAP\", \"INTAKE_OBSERVING\", \"INTAKE_NORMALIZING_GOAL\", \"RUNNING\"], \"task\": \"open the cabinet door in front of you\", \"task_id\": \"task-20260923T182435Z-680ac6\", \"reset\": {\"ok\": true, \"detail\": \"SUCCESSFUL\", \"planning\": \"planned 35 points, 0.70 s at full speed\", \"gripper\": \"at target\"}, \"node_log_tail\": [\"grounded scene: {\\\"camera_id\\\": \\\"wrist_d405\\\", \\\"face_screen\\\": true, \\\"entities\\\": {}}\", \"sheppy client runtime ready; available skills: observe, move_to_pose, set_gripper, grasp, release, follow_constraint; motion armed=True\", \"safety status: reason='STARTUP' fault_latched=False motion_allowed=True\", \"robot facts bootstrapped: [{'predicate': 'held_state', 'args': {'robot_id': 'robot'}, 'validity': 'true'}, {'predicate': 'gripper_empty', 'args': {'robot_id': 'robot'}, 'validity': 'true'}]\", \"scene refresh withheld: UNAVAILABLE: supervisor assertion unavailable\", \"task task-20260923T182435Z-680ac6: discovery OK in keyframe ros-rgbd-483a752029aa4df993f52869e1f3d357 (saved under artifacts/keyframes): {\\\"cabinet_door_1\\\": {\\\"kind\\\": \\\"surface\\\", \\\"attached_to\\\": \\\"cabinet\\\", \\\"grasp\\\": \\\"none\\\", \\\"surface_width_m\\\": 0.\", \"task task-20260923T182435Z-680ac6: constraint {\\\"constraint_id\\\": \\\"cabinet_door_constraint\\\", \\\"kind\\\": \\\"revolute\\\", \\\"hinge_side\\\": \\\"left\\\", \\\"opening\\\": \\\"pull\\\", \\\"door_width_m\\\": 0.2474, \\\"contact_effort_nm\\\": 5.0, \\\"parameters_version\\\": 3, \\\"measured_doo\", \"task task-20260923T182435Z-680ac6: poses observed for ['door_handle_1']; skipped {'cabinet_door_1': 'no pose roles'}\", \"task task-20260923T182435Z-680ac6: goal {\\\"args\\\": {\\\"constraint_id\\\": \\\"cabinet_door_constraint\\\", \\\"target_unit\\\": \\\"rad\\\", \\\"target_value\\\": 1.57}, \\\"predicate\\\": \\\"constraint_goal_verified\\\"}; visible ['cabinet_door_1', 'door_handle_1']\", \"confirmed move_to_pose node approach under operator arming; digest b23e5bfd83cf8041\", \"approach: transit move 1.6 s, 33 points: succeeded SUCCESSFUL\", \"confirmed move_to_pose node reach_handle under operator arming; digest d04a07d51be0c96f\", \"align door_handle_1 look 1/5: OK {\\\"status\\\": \\\"MOVE\\\", \\\"delta_camera_m\\\": [-0.008, 0.0, 0.0], \\\"yaw_deg\\\": 0.0} Shift slightly left to centre the vertical handle between the fingertips.\", \"reach_handle: contact move 2.5 s, 32 points: succeeded SUCCESSFUL\", \"align door_handle_1 look 2/5:\nMETRIC score=35.0\nMETRIC duration_s=95.3\nMETRIC followed_fraction=0.0\nMETRIC task_replans=1\nMETRIC safety_fault=0",
-        "checkedAt": "2026-09-23T18:26:10.351Z",
+        "outputSummary": "{\"at_utc\": \"2026-09-28T15:41:11Z\", \"tier\": \"cycle\", \"score\": 54.0, \"open_score\": 100.0, \"close_score\": 8.0, \"door_moved\": true, \"door_back\": false, \"status\": \"incomplete\", \"safety_fault\": false, \"door\": {\"after_open\": 0.9989, \"after_close\": 0.9994}, \"first_failure\": null, \"open\": {\"score\": 100.0, \"status\": \"incomplete\", \"reason\": \"Measured task goal satisfied; the arm did not get home: no plan home: planner refused: MotionGenStatus.IK_FAIL: no collision-free joint solution AT the goal \\u2014 move it away from obstacles or relax the orientation. The goal is the tool_frame (fingertip midpoint); the flange sits 12 cm behind it along \", \"stages\": {\"intake\": true, \"planned\": true, \"standoff\": true, \"at_handle\": true, \"grasped\": true, \"released\": true}, \"followed_fraction\": 1.0, \"safety_fault\": false, \"task_replans\": 0, \"first_failure\": null}, \"close\": {\"score\": 10.0, \"status\": \"incomplete\", \"reason\": \"NEED_OBSERVATION: Door handle existence must be established before observing its grasp pose.\", \"stages\": {\"intake\": true, \"planned\": false, \"standoff\": false, \"at_handle\": false, \"grasped\": false, \"released\": false}, \"followed_fraction\": 0.0, \"safety_fault\": false, \"task_replans\": 0, \"first_failure\": null}, \"duration_s\": 90.6, \"durations_s\": {\"open\": 43.6, \"close\": 30.7}, \"task_replans\": 0, \"tasks\": {\"open\": \"open the cabinet door\", \"close\": \"close the cabinet door\"}, \"task_ids\": {\"open\": \"task-20260928T153941Z-2441d5\", \"close\": \"task-20260928T154036Z-6c077d\"}, \"phases\": {\"open\": [\"INTAKE_STARTING\", \"PREPARING\", \"INTAKE_DISCOVERING\", \"INTAKE_PROPOSING_CONSTRAINT\", \"INTAKE_BOOTSTRAP\", \"INTAKE_NORMALIZING_GOAL\", \"RUNNING\", \"RETURNING_HOME\"], \"close\": [\"INTAKE_STARTING\", \"PREPARING\", \"INTAKE_DISCOVERING\", \"INTAKE_PROPOSING_CONSTRAINT\", \"INTAKE_BOOTSTRAP\", \"INTAKE_NORMALIZING_GOAL\", \"RUNNING\", \"RETURNING_HOME\"]}, \"homes\": {\"open\": \"SUCCESSFUL\", \"close\": \"already at the start pose\"}, \"operator\": \"GO\", \"reset\": {\"ok\": true, \"detail\": \"already at the start pose\", \"gripper\": \"at target\"}, \"node_log_tail\": [\"grounded scene: {\\\"camera_id\\\": \\\"wrist_d405\\\", \\\"face_screen\\\": true, \\\"entities\\\": {}}\", \"tasks end at the home pose in /home/abra/RAMMP-generalized/artifacts/bench/start-joints.json: [0.0, 0.262, -3.141, -2.269, 0.0, 0.96, 1.571]\", \"sheppy client runtime ready; available skills: observe, move_to_pose, set_gripper, grasp, release, follow_constraint; motion armed=True\", \"safety status: reason='STARTUP' fault_latched=False motion_allowed=True\", \"robot facts bootstrapped: [{'predicate': 'held_state', 'args': {'robot_id': 'robot'}, 'validity': 'true'}, {'predicate': 'gripper_empty', 'args': {'robot_id': 'robot'}, 'validity': 'true'}]\", \"local perception ready (google/owlv2-base-patch16-ensemble on cuda, 12.1 s)\", \"task task-20260928T153941Z-2441d5: ready at home (the empty gripper closes at 0.790 rad)\", \"local discovery: door handle 0.67, door 0.57, cabinet door 0.37\", \"task task-20260928T153941Z-2441d5: discovery OK in keyframe ros-rgbd-ed634a55dc1d44d98933abda0d55e362 (saved under artifacts/keyframes): {\\\"door_handle_1\\\": {\\\"kind\\\": \\\"handle\\\", \\\"attached_to\\\": \\\"door\\\", \\\"grasp\\\": \\\"top_down\\\", \\\"surface_width_m\\\": nul\", \"constraint from jev for door_handle_1: jev: revolute, opens about a quarter turn, like a cabinet or wardrobe door; kind 0.98; hinge left from the depth; pull (a handle is pulled); range quarter_turn (default)\", \"task task-20260928T153941Z-2441d5: constraint {\\\"constraint_id\\\": \\\"door_constraint\\\", \\\"kind\\\": \\\"revolute\\\", \\\"hinge_s\nMETRIC cycle=54.0\nMETRIC open_score=100.0\nMETRIC close_score=8.0\nMETRIC door_back=0\nMETRIC duration_s=90.6\nMETRIC task_replans=0\nMETRIC safety_fault=0\n--- stderr ---\nwaiting for the operator: close the door, stand at the e-stop, then `python tools/bench_eval.py go` (up to 900 s)",
+        "checkedAt": "2026-09-28T15:41:12.047Z",
         "error": null
       }
     },
