@@ -11,4 +11,7 @@ source /home/abra/rammp_deps_ws/install/setup.bash
 source "$MAIN/artifacts/jetson/ros-install/setup.bash"
 source "$MAIN/.venv/bin/activate"
 set -u
-unset CYCLONEDDS_URI ROS_LOCALHOST_ONLY ROS_DOMAIN_ID
+unset ROS_LOCALHOST_ONLY ROS_DOMAIN_ID
+# Every node on the bench speaks Cyclone on loopback (the sheppy manifest's containers and the host nodes);
+# a participant with any other configuration does not see them.
+export CYCLONEDDS_URI="file://$HOME/.config/rammp-bench/cyclonedds-local.xml"

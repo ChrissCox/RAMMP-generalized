@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "goal": "Make the typed task 'open the cabinet door in front of you' succeed on the real Kinova Gen3 bench, reliably and fast, without hardcoding this cabinet, within the safety scope of docs/auto-research.md.",
+  "goal": "Make the typed task 'open the cabinet door' and then, as a separate task in the same node, 'close the cabinet door' both succeed on the real Kinova Gen3 bench, leaving the door as it was found, reliably and fast, without hardcoding this cabinet, within the safety scope of docs/auto-research.md.",
   "projectPath": "",
   "scope": {
     "editable": [
@@ -22,11 +22,14 @@
       "config/",
       "tools/bench_eval.py",
       "AGENTS.md",
-      "docs/auto-research.md"
+      "docs/auto-research.md",
+      "rammp_adl/learned/jail.py",
+      "rammp_adl/learned/gate.py",
+      "rammp_adl/learned/api.py"
     ]
   },
   "metric": {
-    "name": "score",
+    "name": "cycle",
     "unit": "points",
     "direction": "maximize"
   },
@@ -37,7 +40,7 @@
   },
   "tools": {
     "evaluation.run": {
-      "description": "One attended hardware run of the door task: operator GO, node restart on this worktree, reset, task, stage score.",
+      "description": "One attended hardware cycle: operator GO, node restart on this worktree, reset, the open task, then the close task in the same node; scored by stages and by the evaluator's own wrist-camera depth check of the door.",
       "command": "bash",
       "args": [
         "onyx/tools/evaluation/run.sh"
@@ -48,8 +51,8 @@
       "resources": [
         "arm"
       ],
-      "timeoutSeconds": 2400,
-      "leaseTimeoutSeconds": 2700,
+      "timeoutSeconds": 3600,
+      "leaseTimeoutSeconds": 3900,
       "outputLimitBytes": 8000,
       "fingerprintPaths": [
         "onyx/tools",
@@ -84,7 +87,7 @@
   "workflow": [
     {
       "id": "edit",
-      "agent": "Read docs/auto-research.md and the last run's first_failure and node_log_tail. Make one scoped change with its unit test, commit it, then resume.",
+      "agent": "Read docs/auto-research.md and the last cycle's first_failure, door fractions, open/close halves and node_log_tail. Make one scoped change with its unit test, commit it, then resume.",
       "optional": false
     },
     {

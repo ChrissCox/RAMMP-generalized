@@ -3,6 +3,7 @@
 
     python tools/bench_eval.py offline            # no motion: tests, design check, live plan-only if the stack is up
     python tools/bench_eval.py hardware           # one attended run on the arm; prints one JSON line with "score"
+    python tools/bench_eval.py cycle              # open the door, then close it in a second task; one JSON line
     python tools/bench_eval.py go                 # operator: the door is closed, I am at the e-stop, run the next one
     python tools/bench_eval.py record-start       # operator: remember the arm's present joints as the start pose
     python tools/bench_eval.py freeze             # operator: pin the safety files an experiment may not change
@@ -51,7 +52,9 @@ TASK = os.environ.get("RAMMP_BENCH_TASK", "open the cabinet door in front of you
 # these changed is a conversation with the operator, not a commit.
 FROZEN = ("rammp_adl/safety.py", "rammp_adl/motion/collision_guard.py", "rammp_adl/motion/sheppy_client.py",
           "rammp_adl/motion/sheppy_arm.py", "config/sheppy-bench.context.json", "config/imagery-locality.json",
-          "config/reasoning.json", "tools/bench_eval.py")
+          "config/reasoning.json", "tools/bench_eval.py",
+          # The learned-skill sandbox: what model-written code can reach. Never widened to make a skill work.
+          "rammp_adl/learned/jail.py", "rammp_adl/learned/gate.py", "rammp_adl/learned/api.py")
 # The node's own limits, read back from the running process before every run: an experiment may slow the
 # arm or tighten the free-space touch threshold, never the reverse.
 CEILINGS = {"transit_speed_scale": .4, "contact_speed_scale": .25, "touch_nm": 3.}
@@ -61,6 +64,17 @@ HALTED = PIN.parent/"halted"
 MAX_UNATTENDED_HOURS = 12.
 
 STAGES = (("intake", 10), ("planned", 10), ("standoff", 15), ("at_handle", 15), ("grasped", 15), ("followed", 30), ("released", 5))
+
+# The self-resetting cycle: one task opens the door, the next, in the same node, closes it again.
+OPEN_TASK, CLOSE_TASK = "open the cabinet door", "close the cabinet door"
+# The evaluator's own view of the door, independent of the runtime: the wrist camera's depth from the start
+# pose, before the cycle and after each task. Only the near field counts (the door fills it from the start pose;
+# past FAR_MM the D405's depth is too noisy): a pixel in it before the cycle has changed when it left the near
+# field or moved by more than CHANGED_MM (or 3 % of its range). Two still views a few seconds apart differ in
+# about 0.5 % of the pixels; the door opened changes most of them.
+DEPTH_TOPIC = "/wrist_camera/aligned_depth_to_color/image_raw"
+CHANGED_MM, NEAR_MM, FAR_MM = 30., 150., 800.
+DOOR_MOVED, DOOR_BACK = .08, .03                               # fractions of the pixels with depth before the cycle
 
 
 def digests():
@@ -102,6 +116,39 @@ def score_run(result, attempt=None):
             "stages": {stage: bool(reached.get(stage)) for stage, _ in STAGES if stage != "followed"},
             "followed_fraction": round(fraction, 3), "safety_fault": fault, "task_replans": result.get("task_replans"),
             "first_failure": None if failed is None else {k: failed.get(k) for k in ("node_id", "skill", "failure_code", "detail")}}
+
+
+def changed_fraction(reference, now):
+    """The fraction of the reference's near-field pixels whose depth changed.
+
+    None when the reference has too little near field to judge (the door is not in view) or the camera gave no
+    depth at all now; a door swung away leaves the near field, so the present view is not required to keep it.
+    """
+    import numpy as np
+    before, after = np.asarray(reference, float), np.asarray(now, float)
+    seen = (before > NEAR_MM) & (before < FAR_MM)
+    if seen.sum() < .2*seen.size or (after > 0).sum() < .2*after.size:
+        return None
+    changed = seen & ((after <= NEAR_MM) | (after >= FAR_MM) | (np.abs(after-before) > np.maximum(CHANGED_MM, .03*before)))
+    return round(float(changed.sum()/seen.sum()), 4)
+
+
+def score_cycle(opened, closed, door):
+    """0 to 100 for one open-then-close cycle. Pure; the tests pin it.
+
+    opened and closed are score_run results (closed is None when the close task was not sent); door holds the
+    evaluator's own changed fractions after each task. The open half keeps its followed points only when the
+    camera saw the door move; the close half is 80 % the close task's stages and 20 % the camera seeing the
+    scene back as it was before the cycle, and counts only after a door that moved.
+    """
+    moved = door.get("after_open") is not None and door["after_open"] >= DOOR_MOVED
+    back = door.get("after_close") is not None and door["after_close"] <= DOOR_BACK
+    open_points = opened["score"] if moved else min(opened["score"], 100.-dict(STAGES)["followed"])
+    close_points = 0.
+    if moved and closed is not None:
+        close_points = .8*closed["score"]+(20. if back else 0.)
+    return {"score": round(.5*open_points+.5*close_points, 1), "open_score": round(open_points, 1),
+            "close_score": round(close_points, 1), "door_moved": moved, "door_back": back}
 
 
 def emit(payload):
@@ -213,6 +260,25 @@ class Stack:
     def joints(self):
         live = self.client.live_joints()
         return None if live is None else live
+
+    def depth(self, frames=5, timeout_s=10.):
+        """The per-pixel median of a few depth frames from the wrist camera, every 4th pixel, in mm; None without them."""
+        import numpy as np
+        from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+        from sensor_msgs.msg import Image
+        got = []
+
+        def take(message):
+            if len(got) < frames and message.encoding in ("16UC1", "mono16"):
+                rows = np.frombuffer(message.data, np.uint16).reshape(message.height, message.step//2)
+                got.append(rows[::4, :message.width:4].copy())
+        subscription = self.node.create_subscription(Image, DEPTH_TOPIC, take, QoSProfile(
+            depth=5, history=HistoryPolicy.KEEP_LAST, reliability=ReliabilityPolicy.BEST_EFFORT))
+        deadline = time.time()+timeout_s
+        while len(got) < frames and time.time() < deadline:
+            time.sleep(.05)
+        self.node.destroy_subscription(subscription)
+        return np.median(np.stack(got[:frames]), axis=0) if len(got) >= frames else None
 
     def parameters(self, names):
         from rcl_interfaces.srv import GetParameters
@@ -337,22 +403,23 @@ def attempt_for(task_id):
     return None
 
 
-def hardware(args):
+def start_run(args, tier):
+    """What every run that moves the arm does first: the pin, the start pose, the halt, the GO, the node restarted
+    on this checkout, its limits read back, and the arm reset to the start pose. (stack, facts), or (None, the
+    emitted refusal) when the run may not go on."""
+    refuse = lambda status, reason, **extra: (None, emit({"tier": tier, "score": 0., "status": status, "reason": reason, **extra}))
     problems = frozen_problems()
     if problems:
-        return emit({"tier": "hardware", "score": 0., "status": "refused", "reason": "; ".join(problems), "moved": False})
+        return refuse("refused", "; ".join(problems), moved=False)
     start_file = BENCH/"start-joints.json"
     if not start_file.is_file():
-        return emit({"tier": "hardware", "score": 0., "status": "refused", "moved": False,
-                     "reason": "no start pose; the operator runs `python tools/bench_eval.py record-start` once"})
+        return refuse("refused", "no start pose; the operator runs `python tools/bench_eval.py record-start` once", moved=False)
     stopped = halted()
     if stopped:
-        return emit({"tier": "hardware", "score": 0., "status": "halted", "moved": False,
-                     "reason": f"the bench is halted until the operator returns ({stopped})"})
+        return refuse("halted", f"the bench is halted until the operator returns ({stopped})", moved=False)
     standing = unattended_active()
     if not wait_for_go(args.go_timeout_s):
-        return emit({"tier": "hardware", "score": 0., "status": "operator_absent", "moved": False,
-                     "reason": "no operator GO; nothing was sent to the arm"})
+        return refuse("operator_absent", "no operator GO; nothing was sent to the arm", moved=False)
     ACTIVE_ROOT.parent.mkdir(parents=True, exist_ok=True)
     ACTIVE_ROOT.write_text(str(ROOT)+"\n")
     try:
@@ -360,17 +427,30 @@ def hardware(args):
     finally:
         ACTIVE_ROOT.write_text(str(MAIN_ROOT)+"\n")            # the next plain restart is the main checkout again
     if not ready:
-        return emit({"tier": "hardware", "score": 0., "status": "node_failed_to_start", "reason": detail, "moved": False})
+        return refuse("node_failed_to_start", detail, moved=False)
     stack = Stack()
     limits = stack.parameters(list(CEILINGS))
     if limits is None or any(limits[name] > ceiling+1e-9 for name, ceiling in CEILINGS.items()):
-        return emit({"tier": "hardware", "score": 0., "status": "refused", "moved": False,
-                     "reason": f"the node's speed or effort limits are looser than the bench allows: {limits}"})
-    reset = asyncio.run(stack.reset(json.loads(start_file.read_text())["position_rad"]))
+        return refuse("refused", f"the node's speed or effort limits are looser than the bench allows: {limits}", moved=False)
+    start = json.loads(start_file.read_text())["position_rad"]
+    reset = asyncio.run(stack.reset(start))
     if not reset["ok"]:
         end_unattended("reset failed: "+str(reset["detail"])[:200])
-        return emit({"tier": "hardware", "score": 0., "status": "reset_failed", "reason": reset["detail"], "reset": reset})
+        return refuse("reset_failed", reset["detail"], reset=reset)
     time.sleep(args.settle_s)                                  # a still keyframe from the start pose
+    return stack, {"start": start, "log": log, "limits": limits, "reset": reset,
+                   "operator": "standing GO" if standing else "GO"}
+
+
+def log_tail(log, count=40):
+    return [] if log is None else [line[line.find("]: ")+3:][:240] for line in log.read_text(errors="replace").splitlines()
+                                   if "rammp_adl_runtime" in line and "known gap" not in line][-count:]
+
+
+def hardware(args):
+    stack, facts = start_run(args, "hardware")
+    if stack is None:
+        return facts
     began = time.time()
     result, phases = stack.send_task(TASK, args.task_timeout_s)
     if result is None:
@@ -381,10 +461,63 @@ def hardware(args):
         end_unattended("a run ended in a safety fault: "+scored["reason"][:200])
     elif scored["followed_fraction"] > 0. or scored["stages"]["grasped"]:
         end_unattended("the door was grasped or moved; it has to be closed by hand")
-    lines = [] if log is None else [line[line.find("]: ")+3:][:240] for line in log.read_text(errors="replace").splitlines()
-                                    if "rammp_adl_runtime" in line and "known gap" not in line][-40:]
-    return emit({"tier": "hardware", **scored, "operator": "standing GO" if standing else "GO", "duration_s": round(time.time()-began, 1), "phases": phases, "task": TASK,
-                 "task_id": result.get("task_id"), "reset": reset, "node_log_tail": lines, "limits": limits})
+    return emit({"tier": "hardware", **scored, "operator": facts["operator"], "duration_s": round(time.time()-began, 1), "phases": phases, "task": TASK,
+                 "task_id": result.get("task_id"), "reset": facts["reset"], "node_log_tail": log_tail(facts["log"]), "limits": facts["limits"]})
+
+
+def cycle(args):
+    """One open-then-close cycle in one node: the second task closes the door the first one opened.
+
+    After each task the arm is back at the start pose (the runtime's own promise; the reset only checks it or
+    finishes the way) and the evaluator compares the wrist camera's depth with its view before the cycle. A cycle
+    that leaves the door as it found it needs no person, so it does not halt the bench."""
+    stack, facts = start_run(args, "cycle")
+    if stack is None:
+        return facts
+    reference = stack.depth()
+    if reference is None or changed_fraction(reference, reference) is None:
+        end_unattended("the door is not in the wrist camera's near field from the start pose")
+        return emit({"tier": "cycle", "score": 0., "status": "no_view", "moved": True, "reset": facts["reset"],
+                     "reason": "no depth frames, or too little near field to see the door, from the start pose"})
+    began, door, halves, phases, durations, task_ids, homes = time.time(), {}, {}, {}, {}, {}, {}
+    for name, text in (("open", OPEN_TASK), ("close", CLOSE_TASK)):
+        if name == "close" and (halves["open"]["safety_fault"] or (door["after_open"] or 0.) < DOOR_MOVED):
+            break                                              # nothing to close, or a fault a person must see
+        sent = time.time()
+        result, phases[name] = stack.send_task(text, args.task_timeout_s)
+        durations[name] = round(time.time()-sent, 1)
+        if result is None:
+            end_unattended(f"the {name} task returned no result")
+            return emit({"tier": "cycle", "score": 0., "status": "no_result", "reason": f"{name}: "+(phases[name][-1] if phases[name] else ""),
+                         "phases": phases, "node_log_tail": log_tail(facts["log"], 60)})
+        halves[name] = score_run(result, attempt_for(result.get("task_id")))
+        halves[name]["task_replans"] = result.get("task_replans") or 0
+        task_ids[name] = result.get("task_id")
+        homes[name] = asyncio.run(stack.reset(facts["start"]))
+        if not homes[name]["ok"]:
+            door[f"after_{name}"] = None
+            break
+        time.sleep(args.settle_s)
+        view = stack.depth()
+        door[f"after_{name}"] = None if view is None else changed_fraction(reference, view)
+    scored = score_cycle(halves["open"], halves.get("close"), door)
+    fault = any(half["safety_fault"] for half in halves.values())
+    last = door.get("after_close", door.get("after_open"))
+    if fault:
+        end_unattended("a run ended in a safety fault: "+next(h["reason"] for h in halves.values() if h["safety_fault"])[:200])
+    elif not all(home["ok"] for home in homes.values()):
+        end_unattended("the arm could not be returned to the start pose after a task")
+    elif last is None or last > DOOR_BACK:
+        end_unattended("the door was left open or the view from the start pose changed; it has to be put back by hand")
+    failed = next((half["first_failure"] for half in halves.values() if half["first_failure"]), None)
+    status = ("safety_fault" if fault else "succeeded" if scored["door_back"] and all(h["status"] == "succeeded" for h in halves.values())
+              and len(halves) == 2 else "incomplete")
+    return emit({"tier": "cycle", **scored, "status": status, "safety_fault": fault, "door": door, "first_failure": failed,
+                 "open": halves["open"], "close": halves.get("close"), "duration_s": round(time.time()-began, 1),
+                 "durations_s": durations, "task_replans": sum(h["task_replans"] for h in halves.values()),
+                 "tasks": {"open": OPEN_TASK, "close": CLOSE_TASK}, "task_ids": task_ids, "phases": phases,
+                 "homes": {name: home["detail"] for name, home in homes.items()}, "operator": facts["operator"],
+                 "reset": facts["reset"], "node_log_tail": log_tail(facts["log"], 60), "limits": facts["limits"]})
 
 
 def offline(args):
@@ -428,6 +561,11 @@ def main():
     run.add_argument("--task-timeout-s", type=float, default=900.)
     run.add_argument("--settle-s", type=float, default=4.)
     run.set_defaults(function=hardware)
+    both = commands.add_parser("cycle", help="open the door, then close it in a second task; scored by stages and the camera")
+    both.add_argument("--go-timeout-s", type=float, default=900.)
+    both.add_argument("--task-timeout-s", type=float, default=900.)
+    both.add_argument("--settle-s", type=float, default=4.)
+    both.set_defaults(function=cycle)
     off = commands.add_parser("offline")
     off.add_argument("--plan", action="store_true", help="also ask the live planner for a path (no motion)")
     off.set_defaults(function=offline)

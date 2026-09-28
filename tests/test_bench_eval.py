@@ -47,6 +47,39 @@ class ScoreTests(unittest.TestCase):
         self.assertTrue(bench.score_run(faulted)["safety_fault"])
 
 
+class CycleTests(unittest.TestCase):
+    FULL = {"status": "succeeded", "goal": GOAL, "nodes": [node("move_to_pose"), grasp_move(), node("grasp"),
+                                                          node("follow_constraint"), node("release")]}
+
+    def test_the_camera_decides_whether_the_door_moved_and_came_back(self):
+        import numpy as np
+        door = np.full((60, 100), 1500.)
+        door[:, 40:] = 330.                                                       # the closed door fills the near field
+        self.assertEqual(bench.changed_fraction(door, door+5.), 0.)                # depth noise is not a change
+        opened = door.copy()
+        opened[:, 40:] = 1400.                                                    # swung away out of the near field
+        self.assertEqual(bench.changed_fraction(door, opened), 1.)
+        ajar = door.copy()
+        ajar[:, 90:] = 400.                                                       # the handle edge 7 cm out
+        self.assertAlmostEqual(bench.changed_fraction(door, ajar), .167, places=3)
+        self.assertIsNone(bench.changed_fraction(np.full((60, 100), 1500.), door))  # no door in view: no judgement
+        self.assertIsNone(bench.changed_fraction(door, np.zeros((60, 100))))       # no depth now: no judgement
+
+    def test_each_half_is_credited_only_for_what_the_camera_saw(self):
+        full = bench.score_run(self.FULL)
+        self.assertEqual(bench.score_cycle(full, full, {"after_open": .9, "after_close": .01})["score"], 100.)
+        # The runtime said it followed the door, but the camera saw nothing move: no followed points, no close half.
+        unseen = bench.score_cycle(full, full, {"after_open": .01, "after_close": .01})
+        self.assertEqual((unseen["score"], unseen["door_moved"]), (35., False))
+        # Closed by every stage, but left ajar: the close half loses the camera's 20.
+        ajar = bench.score_cycle(full, full, {"after_open": .9, "after_close": .2})
+        self.assertEqual((ajar["score"], ajar["close_score"], ajar["door_back"]), (90., 80., False))
+        # A close task that declared the door already shut, moving nothing, earns only its intake.
+        declined = bench.score_run({"status": "succeeded", "goal": GOAL, "nodes": []})
+        self.assertEqual(bench.score_cycle(full, declined, {"after_open": .9, "after_close": .9})["score"], 54.)
+        self.assertEqual(bench.score_cycle(full, None, {"after_open": .9})["close_score"], 0.)
+
+
 class GateTests(unittest.TestCase):
     def setUp(self):
         # The operator's real unattended window and halt must not leak into these tests.

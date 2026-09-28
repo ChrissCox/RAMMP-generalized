@@ -4,19 +4,19 @@ The full brief is [docs/auto-research.md](../docs/auto-research.md) and the repo
 
 ## Goal
 
-Make the typed task `open the cabinet door in front of you` succeed on the real Kinova Gen3 bench, reliably and fast. Generalization matters more than this door: hardcoding this cabinet, pose or label is a regression.
+Two typed tasks, one after the other in the same node: `open the cabinet door`, then `close the cabinet door`. The second must find the door open (nothing tells it) and close it, so a good cycle leaves the bench as it found it. Reliably and fast. Generalization matters more than this door: hardcoding this cabinet, pose, label or the order of the two tasks is a regression.
 
 ## Primary Metric
 
-- `METRIC score=<0..100>`, maximize. Points by stage reached: intake 10, plan 10, standoff 15, at the handle 15, grasped 15, followed 30 scaled by the fraction of the target angle, released 5. Halved when the supervisor ended the run.
-- Secondary: `duration_s`, `followed_fraction`, `task_replans`, `safety_fault`. Among equal scores prefer shorter and fewer replans.
-- One run is one sample on a physical system. Re-run an apparent gain before building on it. A run that never moved (no operator GO, refused, node failed to start, reset failed) exits without a metric and is not a result.
+- `METRIC cycle=<0..100>`, maximize: the mean of two halves. Each task is scored by stage (intake 10, plan 10, standoff 15, at the handle 15, grasped 15, followed 30 scaled by the fraction of the target, released 5; halved on a supervisor stop). The evaluator's own wrist-camera depth check from the start pose decides the rest: the open half keeps its followed points only if the door was seen to move; the close task is sent only after a door that moved, and its half is 80 % its stages plus 20 % for the scene seen back as it was.
+- Secondary: `open_score`, `close_score`, `door_back`, `duration_s`, `task_replans`, `safety_fault`. Among equal scores prefer shorter and fewer replans.
+- One run is one sample on a physical system. Re-run an apparent gain before building on it. A run that never measured (no operator GO, refused, node failed to start, reset failed, no view of the door) exits without a metric and is not a result.
 
 ## Workflow And Tools
 
-- edit: one idea, named from the last run's `first_failure` or `node_log_tail`, with its unit test, in one commit.
+- edit: one idea, named from the last cycle's `first_failure`, `door` fractions or `node_log_tail`, with its unit test, in one commit.
 - guard (`guard.offline`): pinned safety files unchanged, unit tests, design check, one live plan through every send gate. No motion.
-- evaluate (`evaluation.run`): waits up to 15 minutes for the operator's GO, restarts the node on this worktree's code, returns the arm to the start pose, sends the task, scores it. Holds the `arm` resource; one worker.
+- evaluate (`evaluation.run`): waits up to 15 minutes for the operator's GO, restarts the node on this worktree's code, returns the arm to the start pose, runs the open task and the close task, looks after each, scores the cycle. Holds the `arm` resource; one worker.
 
 ## Editable Scope
 
@@ -24,11 +24,11 @@ Make the typed task `open the cabinet door in front of you` succeed on the real 
 
 ## Protected
 
-`rammp_adl/safety.py`, `rammp_adl/motion/collision_guard.py`, `rammp_adl/motion/sheppy_client.py`, `rammp_adl/motion/sheppy_arm.py`, `config/`, `tools/bench_eval.py`, `AGENTS.md`, `docs/auto-research.md`, `onyx/`. The evaluator also refuses when a pinned file differs from the operator's pin or the node's speed and touch limits are looser than 0.4, 0.25 and 3.0 Nm.
+`rammp_adl/safety.py`, `rammp_adl/motion/collision_guard.py`, `rammp_adl/motion/sheppy_client.py`, `rammp_adl/motion/sheppy_arm.py`, `config/`, `tools/bench_eval.py`, `AGENTS.md`, `docs/auto-research.md`, `onyx/`, and the learned-skill sandbox (`rammp_adl/learned/jail.py`, `gate.py`, `api.py`). The evaluator also refuses when a pinned file differs from the operator's pin or the node's speed and touch limits are looser than 0.4, 0.25 and 3.0 Nm.
 
 ## Operator commands and a halted bench
 
-`bench_eval.py go`, `unattended`, `attended`, `freeze` and `record-start` belong to the operator; never run them. Runs may go unattended under the operator's standing GO. The bench halts itself when a run faults, cannot be reset, returns no result, grasps or moves the door, or the window expires. The evaluator then reports status `halted` without moving. When it does, stop: record `onyx-worker research finish --reason bench_needs_person` with a summary of what the last runs showed. Do not try to clear a halt.
+`bench_eval.py go`, `unattended`, `attended`, `freeze` and `record-start` belong to the operator; never run them. Runs may go unattended under the operator's standing GO. The bench halts itself when a run faults, cannot be reset, returns no result, leaves the door (or the view from the start pose) other than it found it, or the window expires. The evaluator then reports status `halted` without moving. When it does, stop: record `onyx-worker research finish --reason bench_needs_person` with a summary of what the last runs showed. Do not try to clear a halt.
 
 ## Never, whatever the score
 
@@ -36,6 +36,6 @@ Remove or bypass a guard, gate, confirmation or the face screen; raise an effort
 
 ## Project Guidance
 
-- State on 2026-09-21: intake, discovery, constraint proposal, goal binding and the first transit to the standoff work on the robot. The grasp approach with model-guided alignment, the grasp, constraint following and release have never completed on hardware. Start there: read the node log lines `align`, `follow` and the per-move receipts.
-- Useful: `rammp_adl/sheppy_backend.py` (skills), `rammp_adl/perception/grounded_scene.py` and `object_geometry.py` (poses), `rammp_adl/constraints.py`, `rammp_adl/reasoning.py` (prompts; keep them short), `artifacts/keyframes/` (what the model saw), `artifacts/constraints/` (attempt history).
+- State on 2026-09-28: the open task succeeds on the robot (100 points at 50 s on 2026-09-25): discovery (OWLv2 locally, Astra only when it sees nothing), constraint proposal, grasp, a stiff pull with a mid-pull hinge refit from the wrist camera, release, home. Within one task a door can be closed on the hinge its opening fitted (the `open_then_close` learned seed, reverse `follow_constraint`, `_moved_part_pose`). Not built: a new task knowing a part's state. The close task starts the door at "closed" from discovery, so it has nothing to do. Start there: a part's present angle measured from what the camera sees (its face against the closed face, or the hinge the last task fitted), then the close follows the same mechanism back.
+- Useful: `rammp_adl/sheppy_backend.py` (skills, `constraint_faces`, `_moved_part_pose`, `hinge_from_faces` in `motion/articulation.py`), `rammp_adl/constraints.py` and `artifacts/constraints/` (attempt history, fitted hinges), `rammp_adl/perception/` (local detector, grounded scene), `rammp_adl/reasoning.py` and `decisions.py` (keep prompts short), `rammp_adl/learned/` (skills, library, loop; not the sandbox files).
 - A failure that repeats unchanged after one fix is a wrong diagnosis. Record each session's findings in `docs/jetson.md`.
