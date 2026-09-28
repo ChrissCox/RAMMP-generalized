@@ -157,6 +157,41 @@ class GroundedSceneTests(unittest.TestCase):
             asyncio.run(self.scene({"entity_id": "small_box_1", "camera": "wrist", "purpose": "pose"}, self.execution_context(world)))
         self.assertEqual([c[0] for c in self.reasoner.calls], ["discover", "ground"])
 
+    def test_a_part_gone_from_its_place_that_a_task_left_moved_is_carried_not_grounded_again(self):
+        tall = BOX[:4]+(.2,)                                                     # gone, it leaves a gap deeper than the check's tolerance
+        self.reasoner.boxes = [("small box", tall)]
+        self.feed(boxes=(tall,))
+        asyncio.run(self.scene.discover(self.reasoner, self.base_context, "pick up the small box"))
+        world = self.world()
+        self.assertEqual(self.scene.left_its_place("small_box_1")["gone"], False)   # still where it was measured
+        self.now = MONO+24.05
+        self.clock.note(STAMP+24_000_000_000, MONO+24.02)
+        self.scene.on_pair(synthetic_pair(render(self.scene.pose, []), capture_id="cap-3",
+                                          stamp_ns=STAMP+24_000_000_000, receipt=MONO+24.02), force=True)
+        place = self.scene.left_its_place("small_box_1")
+        self.assertTrue(place["gone"], place)
+        self.assertIn("differs", place["detail"])
+        self.assertEqual(self.scene.left_its_place("never_seen")["gone"], False)    # unknown is not gone
+        self.now = MONO+40.05                                                    # a still scene selected nothing since
+        self.assertIsNone(self.scene.current_keyframe())
+        self.clock.note(STAMP+40_000_000_000, MONO+40.02)
+        self.scene._last_pair = synthetic_pair(render(self.scene.pose, []), capture_id="cap-4",
+                                               stamp_ns=STAMP+40_000_000_000, receipt=MONO+40.02)
+        self.assertTrue(self.scene.left_its_place("small_box_1")["gone"])      # a keyframe is taken from the newest capture
+        # Intake marks it carried: the pose measured before it moved stands, for the backend to carry, without a cloud call.
+        self.scene.carried["small_box_1"] = {"constraint_id": "box_constraint", "at": .9, "unit": "rad"}
+        measurement = asyncio.run(self.scene({"entity_id": "small_box_1", "camera": "wrist", "purpose": "pose"}, self.execution_context(world)))
+        self.assertTrue(measurement.data["reused_keyframe"])
+        self.assertEqual(measurement.data["carried"]["at"], .9)
+        self.assertEqual(sorted(p.pose_role for p in measurement.metric_poses), ["grasp", "pregrasp", "retract", "staging"])
+        self.assertEqual([c[0] for c in self.reasoner.calls], ["discover"])
+        self.now = MONO+30.05
+        self.clock.note(STAMP+30_000_000_000, MONO+30.02)
+        self.scene.on_pair(synthetic_pair(render(self.scene.pose, [tall]), capture_id="cap-5",
+                                          stamp_ns=STAMP+30_000_000_000, receipt=MONO+30.02), force=True)
+        asyncio.run(self.scene.discover(self.reasoner, self.base_context, "pick up the small box"))
+        self.assertNotIn("small_box_1", self.scene.carried)                     # seen again: measured where it is
+
     def test_after_the_camera_moves_the_entity_is_re_grounded_once(self):
         self.feed()
         asyncio.run(self.scene.discover(self.reasoner, self.base_context, "pick up the small box"))

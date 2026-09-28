@@ -212,6 +212,7 @@ class SheppyArmBackend:
         # the part's absolute goal, so a retry after a partial pull continues from there on the same hinge.
         self.constraint_progress, self.constraint_arcs = {}, {}
         self.constraint_faces = {}                      # the part's face as the wrist camera saw it before it moved
+        self.constraint_references = {}                 # where the hand held each part at a known value (its first grip)
         self.planner_world_dir, self._worlds_written = None, 0
         self.events = []
 
@@ -633,9 +634,18 @@ class SheppyArmBackend:
         return {"standoff_m": [float(v) for v in standoff], "turn_deg": round(turn, 2)}
 
     def _entity_support(self, entity_id):
+        """The surface the part stands on, as measured, carried with the part to where it is now (_part_motion)."""
+        import numpy as np
         records = getattr(self.scene, "entities", None) or {}
         support = ((records.get(entity_id) or {}).get("grasp") or {}).get("support")
-        return (support["point_m"], support["normal"]) if support else None
+        if not support:
+            return None
+        motion = self._part_motion(entity_id)
+        if motion is None:
+            return (support["point_m"], support["normal"])
+        turn, pivot, shift = motion
+        point = pivot+turn @ (np.asarray(support["point_m"], dtype=float)-pivot)+shift
+        return ([float(v) for v in point], [float(v) for v in turn @ np.asarray(support["normal"], dtype=float)])
 
     def _support_in_base(self, tool_position, tool_orientation):
         import numpy as np
@@ -694,8 +704,23 @@ class SheppyArmBackend:
         part's angle; a drawer slides them along its axis. The close view refines the last centimetres as usual.
         """
         import numpy as np
-        from .constraints import rotation_about
         from .motion.kinematics import quaternion_matrix, quaternion_xyzw_from_matrix
+        motion = self._part_motion(entity_id)
+        if motion is None:
+            return tuple(position), tuple(orientation)
+        turn, pivot, shift = motion
+        position = pivot+turn @ (np.asarray(position, dtype=float)-pivot)+shift
+        orientation = quaternion_xyzw_from_matrix(turn @ quaternion_matrix(tuple(orientation)))
+        return tuple(float(v) for v in position), tuple(float(v) for v in orientation)
+
+    def _part_motion(self, entity_id):
+        """How the part carrying entity_id has moved since it was measured: (rotation, pivot, shift), or None.
+
+        A door turns about its hinge by its angle (rotation about the pivot, no shift); a drawer slides along its
+        axis (no rotation). The part's value is the one this task moved it to, or the one an earlier task left it at.
+        """
+        import numpy as np
+        from .constraints import rotation_about
         for constraint_id, moved in self.constraint_progress.items():
             record, arc = self.constraints.get(constraint_id), self.constraint_arcs.get(constraint_id)
             if record is None or arc is None or record["entity_id"] != entity_id or abs(moved) < 1e-3:
@@ -703,14 +728,43 @@ class SheppyArmBackend:
             axis = np.asarray(arc["axis_base"], dtype=float)
             axis /= np.linalg.norm(axis)
             if record["kind"] == "revolute":
-                turn = rotation_about(axis, float(arc.get("direction", 1.))*moved)
-                pivot = np.asarray(arc["pivot_base"], dtype=float)
-                position = pivot+turn @ (np.asarray(position, dtype=float)-pivot)
-                orientation = quaternion_xyzw_from_matrix(turn @ quaternion_matrix(tuple(orientation)))
-            else:
-                position = np.asarray(position, dtype=float)+axis*float(arc.get("direction", 1.))*moved
-            return tuple(float(v) for v in position), tuple(float(v) for v in orientation)
-        return tuple(position), tuple(orientation)
+                return rotation_about(axis, float(arc.get("direction", 1.))*moved), np.asarray(arc["pivot_base"], dtype=float), np.zeros(3)
+            return np.eye(3), np.zeros(3), axis*float(arc.get("direction", 1.))*moved
+        return None
+
+    def inherit_part_state(self, constraint_id, state):
+        """A part an earlier task left moved (constraints.left_moved), taken up as if this task had moved it.
+
+        Its handle's poses measured before it moved are carried to where it was left (_moved_part_pose), a
+        follow goes on from there on the same mechanism, and the hand's grip measures how far it really is.
+        """
+        record = self.constraints.get(constraint_id)
+        if record is None:
+            raise BackendFailure("stale_state", f"no metric constraint record is installed for {constraint_id}")
+        self.constraint_progress[constraint_id] = float(state["at"])
+        self.constraint_arcs[constraint_id] = {**record, "pivot_base": list(state["pivot_base"]),
+                                               "axis_base": list(state["axis_base"]), "direction": float(state["direction"])}
+        if state.get("reference"):
+            self.constraint_references[constraint_id] = {"tool_m": list(state["reference"]["tool_m"]),
+                                                         "at": float(state["reference"]["at"])}
+
+    def _value_by_hand(self, record, arc, position):
+        """The part's value from where the hand grips it now against where it gripped it at a known value; or None."""
+        import numpy as np
+        reference = self.constraint_references.get(record["constraint_id"])
+        if reference is None:
+            return None
+        axis = np.asarray(arc["axis_base"], dtype=float)/np.linalg.norm(arc["axis_base"])
+        then, now = np.asarray(reference["tool_m"], dtype=float), np.asarray(position, dtype=float)
+        direction = float(arc.get("direction", 1.))
+        if record["kind"] != "revolute":
+            return float(reference["at"])+direction*float((now-then) @ axis)
+        pivot = np.asarray(arc["pivot_base"], dtype=float)
+        a, b = then-pivot, now-pivot
+        a, b = a-(a @ axis)*axis, b-(b @ axis)*axis
+        if min(np.linalg.norm(a), np.linalg.norm(b)) < .02:
+            return None
+        return float(reference["at"])+direction*math.atan2(float(np.cross(a, b) @ axis), float(a @ b))
 
     async def _way_out(self, context):
         """Straight back from where the hand is, along its approach axis: the first of way_out_m the planner reaches.
@@ -1470,6 +1524,17 @@ class SheppyArmBackend:
         position, orientation = self._tool_pose(start)
         import numpy as np
         from .motion.kinematics import quaternion_matrix
+        if constraint_id in self.constraint_arcs:
+            # On a known mechanism the grip says how far the part really is: a door let go springs back, and one an
+            # earlier task left is known from memory. Near what is remembered, the hand's measure stands.
+            by_hand = self._value_by_hand(record, self.constraint_arcs[constraint_id], position)
+            if by_hand is not None and 1e-4 < abs(by_hand-already) <= (.3 if unit == "rad" else .05):
+                self.log(f"follow {constraint_id}: the grip puts the part at {by_hand:.3f} {unit}, remembered at {already:.3f}")
+                already = by_hand
+                target = target_total-already
+                backward = target < -(.02 if unit == "rad" else .005)
+                sign = -1. if backward else 1.
+        self.constraint_references.setdefault(constraint_id, {"tool_m": [float(v) for v in position], "at": already})
         if abs(target) <= (.02 if unit == "rad" else .005):
             self.log(f"follow {constraint_id}: already at {already:.3f} of {target_total:.3f} {unit}; nothing left to pull")
             return self._outcome([assertion("constraint_goal_verified", {"constraint_id": constraint_id,
@@ -1746,8 +1811,13 @@ class SheppyArmBackend:
                                                      grasped=self.holding_id == entity_id, verified=verified)
                 progress = {**scores, "measured_turn_rad": ([m["turned_rad"] for m in measured if m["turned_rad"] is not None] or [None])[-1],
                             "verified_locally": verified, "hinge": hinge, "refits": refits}
+                ended_on = self.constraint_arcs.get(constraint_id)
+                mechanism = None if ended_on is None else {
+                    "pivot_base": [round(float(v), 5) for v in ended_on["pivot_base"]],
+                    "axis_base": [round(float(v), 5) for v in ended_on["axis_base"]],
+                    "direction": float(ended_on.get("direction", 1.)), "reference": self.constraint_references.get(constraint_id)}
                 record_attempt(record, task_id=context.task_id, target=target_total, achieved=already+sign*achieved, status=status,
-                               detail=detail, peak_effort_nm=peak, trip=trip_info, progress=progress)
+                               detail=detail, peak_effort_nm=peak, trip=trip_info, progress=progress, mechanism=mechanism)
                 if self.constraint_store is not None:
                     if status == "succeeded" and frames:
                         save_demonstration(self.constraint_store, record, frames)
