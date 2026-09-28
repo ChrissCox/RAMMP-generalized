@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -241,25 +242,50 @@ def wait_for_go(timeout_s):
 
 # -- ROS side ------------------------------------------------------------------------
 class Stack:
-    """An unarmed-by-default client on its own node, spun in a thread."""
+    """The evaluator's ROS side, on its own node spun in a thread.
+
+    Its arm client lives on a second node that exists only while the evaluator itself moves or plans for the
+    arm (a reset, the plan-only check, reading the joints): the runtime refuses a task while any other node holds
+    a client of the driver's actions, as it should, so none is left behind when a task is sent.
+    """
+    ARM_NODE = "rammp_bench_eval_arm"
 
     def __init__(self):
         import rclpy
         from rclpy.node import Node
-        from rammp_adl.motion.sheppy_arm import SheppyArmClient
         rclpy.init()
-        self.rclpy, self.node = rclpy, Node("rammp_bench_eval")
-        self.client = SheppyArmClient(self.node)
+        self.rclpy, self.Node, self.node = rclpy, Node, Node("rammp_bench_eval")
         self.executor = rclpy.executors.SingleThreadedExecutor()
         self.executor.add_node(self.node)
         threading.Thread(target=self.executor.spin, daemon=True).start()
+
+    @contextlib.contextmanager
+    def arm_client(self):
+        """An unarmed-by-default arm client for the length of the block; its node is gone from the graph after."""
+        from rammp_adl.motion.sheppy_arm import SheppyArmClient
+        node = self.Node(self.ARM_NODE)
+        client = SheppyArmClient(node)
+        self.executor.add_node(node)
         deadline = time.time()+10.
-        while self.client.live_joints() is None and time.time() < deadline:
+        while client.live_joints() is None and time.time() < deadline:
             time.sleep(.1)
+        try:
+            yield client
+        finally:
+            client.disarm()
+            self.executor.remove_node(node)
+            # Humble's destroy_node leaves action clients (waitables) alive, and they keep the node in the graph.
+            for waitable in list(node.waitables):
+                if hasattr(waitable, "destroy"):
+                    waitable.destroy()
+            node.destroy_node()
+            deadline = time.time()+10.
+            while time.time() < deadline and any(name == self.ARM_NODE for name, _ in self.node.get_node_names_and_namespaces()):
+                time.sleep(.1)
 
     def joints(self):
-        live = self.client.live_joints()
-        return None if live is None else live
+        with self.arm_client() as client:
+            return client.live_joints()
 
     def depth(self, frames=5, timeout_s=10.):
         """The per-pixel median of a few depth frames from the wrist camera, every 4th pixel, in mm; None without them."""
@@ -296,27 +322,23 @@ class Stack:
     async def reset(self, start):
         """Open the hand and return to the recorded start joints: planned, gated, slowed, under an effort guard."""
         from rammp_adl.motion.collision_guard import EffortGuard, GuardSet
-        from rammp_adl.motion.sheppy_client import scale_trajectory_time
-        self.client.arm()
-        try:
-            opened = await self.client.gripper(0.)
-            if not await self.client.settle(timeout_s=10.):
+        from rammp_adl.motion.sheppy_client import CONTINUOUS, scale_trajectory_time, wrap_diff
+        with self.arm_client() as client:
+            client.arm()
+            opened = await client.gripper(0.)
+            if not await client.settle(timeout_s=10.):
                 return {"ok": False, "detail": "the arm is not still; reset refused"}
-            live = self.client.live_joints()["position_rad"]
-            from rammp_adl.motion.sheppy_client import wrap_diff as _wrap
-            if max(abs(_wrap(a, b)) for a, b in zip(live, start)) < .02:
+            live = client.live_joints()["position_rad"]
+            if max(abs(wrap_diff(a, b)) for a, b in zip(live, start)) < .02:
                 return {"ok": True, "detail": "already at the start pose", "gripper": opened["message"]}
             # The short way round: a continuous joint read across +-pi from the recorded start would otherwise be
             # planned the long way, most of a turn.
-            from rammp_adl.motion.sheppy_client import CONTINUOUS, wrap_diff
             nearest = [q+wrap_diff(s, q) if i in CONTINUOUS else s for i, (q, s) in enumerate(zip(live, start))]
-            trajectory, planning = await self.client.plan_to_joints(nearest)
-            receipt = await self.client.execute(scale_trajectory_time(trajectory, 1./CEILINGS["transit_speed_scale"]),
-                                                guard=GuardSet(effort=EffortGuard(CEILINGS["touch_nm"])))
+            trajectory, planning = await client.plan_to_joints(nearest)
+            receipt = await client.execute(scale_trajectory_time(trajectory, 1./CEILINGS["transit_speed_scale"]),
+                                           guard=GuardSet(effort=EffortGuard(CEILINGS["touch_nm"])))
             return {"ok": receipt["status"] == "succeeded", "detail": receipt["message"] or receipt["status"],
                     "planning": planning["message"], "gripper": opened["message"]}
-        finally:
-            self.client.disarm()
 
     def send_task(self, text, timeout_s):
         from rclpy.action import ActionClient
@@ -542,13 +564,14 @@ def plan_only():
     from rammp_adl.motion.sheppy_client import SheppyClientError, refusal, scale_trajectory_time
     try:
         stack = Stack()
-        live = stack.joints()
-        if live is None:
-            return {"fraction": 0., "detail": "no /joint_states"}
-        target = [q+(.15 if index == 5 else 0.) for index, q in enumerate(live["position_rad"])]
-        trajectory, planning = asyncio.run(stack.client.plan_to_joints(target, timeout_s=60.))
-        why = refusal(scale_trajectory_time(trajectory, 2.5), stack.joints()["position_rad"])
-        return {"fraction": 0. if why else 1., "detail": why or planning["message"], "armed": stack.client.motion_enabled}
+        with stack.arm_client() as client:
+            live = client.live_joints()
+            if live is None:
+                return {"fraction": 0., "detail": "no /joint_states"}
+            target = [q+(.15 if index == 5 else 0.) for index, q in enumerate(live["position_rad"])]
+            trajectory, planning = asyncio.run(client.plan_to_joints(target, timeout_s=60.))
+            why = refusal(scale_trajectory_time(trajectory, 2.5), client.live_joints()["position_rad"])
+            return {"fraction": 0. if why else 1., "detail": why or planning["message"], "armed": client.motion_enabled}
     except (SheppyClientError, Exception) as exc:              # noqa: BLE001 - a measurement, reported
         return {"fraction": 0., "detail": f"{type(exc).__name__}: {exc}"[:300]}
 
