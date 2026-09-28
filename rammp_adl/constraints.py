@@ -185,7 +185,10 @@ def progress_score(*, achieved, target, grasped, verified):
     return 3 if achieved >= .5*target else 2
 
 
-def record_attempt(record, *, task_id, target, achieved, status, detail="", peak_effort_nm=None, trip=None, progress=None):
+def record_attempt(record, *, task_id, target, achieved, status, detail="", peak_effort_nm=None, trip=None, progress=None,
+                   mechanism=None):
+    """Append one attempt. mechanism: the hinge or slide it ended on and where the hand held the part at a known
+    value, so a later task can find the part where this one left it (left_moved)."""
     attempt = {"task_id": task_id, "at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                "target": float(target), "achieved": float(achieved), "status": status, "detail": detail[:300],
                "peak_effort_nm": peak_effort_nm, "trip": checked_copy(trip) if trip is not None else None,
@@ -194,9 +197,26 @@ def record_attempt(record, *, task_id, target, achieved, status, detail="", peak
                               "opening": record.get("opening"), "step": record.get("step"),
                               "contact_effort_nm": record.get("contact_effort_nm"),
                               "parameters_version": record.get("parameters_version")}}
+    if mechanism is not None:
+        attempt["mechanism"] = checked_copy(mechanism)
     record.setdefault("attempts", []).append(attempt)
     record["updated_utc"] = attempt["at_utc"]
     return attempt
+
+
+def left_moved(record, *, moved=.05):
+    """Where the last attempt left the part when it left it moved from its start: the value, the mechanism it moved
+    on and where the hand held it at a known value; None when it was left at its start or nothing was recorded.
+
+    Memory only: a person may have moved the part since. The caller checks the camera before believing it.
+    """
+    attempts = record.get("attempts") or []
+    if not attempts or not attempts[-1].get("mechanism"):
+        return None
+    last = attempts[-1]
+    if abs(float(last.get("achieved") or 0.)-float(record.get("minimum", 0.))) < moved:
+        return None
+    return {"at": float(last["achieved"]), "task_id": last.get("task_id"), **checked_copy(last["mechanism"])}
 
 
 def history_summary(record, *, limit=8):

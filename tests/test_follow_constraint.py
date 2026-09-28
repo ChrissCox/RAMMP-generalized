@@ -622,6 +622,45 @@ class FollowConstraintTests(BackendCase):
         unmoved, _ = backend._moved_part_pose("handle_1", tuple(shut_tool), (0., 0., 0., 1.))
         np.testing.assert_allclose(unmoved, shut_tool, atol=1e-6)
 
+    def test_a_door_an_earlier_task_left_open_is_sought_where_it_was_left_and_closed_from_where_the_hand_grips_it(self):
+        from types import SimpleNamespace
+        from rammp_adl.constraints import left_moved, rotation_about
+        client, backend, world = self.arc()
+        shut_tool = np.asarray(backend._tool_pose(GRASP_JOINTS)[0])
+        self.assertEqual(self.follow(backend, world, .7).status, "succeeded")
+        sprung_back = client.joints                                              # where the door comes to rest once let go
+        self.assertEqual(self.follow(backend, world, .9).status, "succeeded")
+        open_tool = np.asarray(backend._tool_pose(client.joints)[0])
+        # A new task: a fresh backend knows only what the store kept. The last attempt left the door open on its hinge.
+        state = left_moved(self.store.load("cabinet door"))
+        self.assertAlmostEqual(state["at"], .9, places=6)
+        np.testing.assert_allclose(state["pivot_base"], HINGE["pivot_base"], atol=1e-5)
+        np.testing.assert_allclose(state["reference"]["tool_m"], shut_tool, atol=1e-9)   # where the hand held it shut
+        later, world = self.backend(client)
+        face = np.array([-1., 0., 0.])
+        later.scene = SimpleNamespace(entities={"handle_1": {"grasp": {"support": {"point_m": list(shut_tool+.03*face),
+                                                                                    "normal": list(face)}}}})
+        self.assertEqual(later._entity_support("handle_1"), (list(shut_tool+.03*face), list(face)))
+        later.inherit_part_state("cabinet_door_constraint", state)
+        moved, _ = later._moved_part_pose("handle_1", tuple(shut_tool), (0., 0., 0., 1.))
+        self.assertLess(np.linalg.norm(np.asarray(moved)-open_tool), .005)       # the handle is sought where the door was left
+        point, normal = later._entity_support("handle_1")                       # and the face it stands on turned with it
+        np.testing.assert_allclose(point, later._moved_part_pose("handle_1", tuple(shut_tool+.03*face), (0., 0., 0., 1.))[0], atol=1e-9)
+        axis = np.asarray(HINGE["axis_base"])/np.linalg.norm(HINGE["axis_base"])
+        np.testing.assert_allclose(normal, rotation_about(axis, HINGE["direction"]*.9) @ face, atol=1e-4)   # the store keeps 5 decimals
+        client.joints = sprung_back                                              # the close view put the grip where it came to rest
+        logs = []
+        later.log = logs.append
+        closed = self.follow(later, world, 0.)
+        self.assertEqual(closed.status, "succeeded")
+        self.assertTrue(any("the grip puts the part at 0.700" in line for line in logs), logs)
+        back = np.asarray(later._tool_pose(client.sent[-1].points[-1].state.position)[0])
+        self.assertLess(np.linalg.norm(back-shut_tool), .005)                    # shut where it was gripped shut, not .2 rad past
+        radii = self.on_the_arc(client.sent[-1], later)
+        self.assertLess(radii.max()-radii.min(), .004)                          # on the door's circle all the way back
+        self.assertAlmostEqual(later.constraint_progress["cabinet_door_constraint"], 0., places=6)
+        self.assertIsNone(left_moved(self.store.load("cabinet door")))           # left shut: the next task carries nothing
+
     def test_a_rehearsal_plans_each_move_from_where_the_last_ended_and_refuses_what_is_out_of_reach(self):
         from types import SimpleNamespace
         from rammp_adl.learned import run_skill

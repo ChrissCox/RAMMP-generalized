@@ -591,6 +591,34 @@ def create_node():
                 self.get_logger().info(f"task {task_id}: constraint {json.dumps(shown)}; proposal: {found['proposal'].get('rationale', '')[:160]}")
             return articulations
 
+        def _carry_moved_parts(self, task_id, runtime, articulations, seen):
+            """Handles not seen now whose part an earlier task left moved: their poses carried to where it was left.
+
+            Memory alone is not believed: the depth where the handle was measured must no longer show it. The
+            close view at the standoff then re-measures the part, and the grip measures how far it really is.
+            """
+            from .constraints import left_moved
+            self.scene.carried.clear()
+            carried = []
+            for item in articulations:
+                record, handle = item["record"], item["handle"]
+                state = left_moved(record)
+                if handle in seen or state is None:
+                    continue
+                place = self.scene.left_its_place(handle)
+                if not place["gone"]:
+                    self.get_logger().info(f"task {task_id}: the {record['label']} was left at {state['at']:.2f} {record['unit']}, "
+                                           f"but {handle} is not seen gone from where it was measured ({place['detail']}); not carried")
+                    continue
+                runtime.backend.inherit_part_state(record["constraint_id"], state)
+                self.scene.carried[handle] = {"constraint_id": record["constraint_id"], "at": state["at"], "unit": record["unit"],
+                                              "left_by": state.get("task_id"), "place": place["detail"]}
+                carried.append(handle)
+                self.get_logger().info(f"task {task_id}: {handle} not seen; the {record['label']} was left at {state['at']:.2f} "
+                                       f"{record['unit']} by {state.get('task_id')} and the depth where it was measured changed "
+                                       f"({place['detail']}); its poses carried there")
+            return carried
+
         async def _intake_and_run(self, task_text, skill=None):
             """Typed task, begun and ended with the arm at home (_prepare_for_task, _finish_at_home).
 
@@ -830,8 +858,9 @@ def create_node():
                                                             **({} if closed is None else {"closed_knuckle_rad": closed-.03}))
                     visibility = seed_visibility(runtime.world, self.scene, now=runtime.world.clock())
                     seed_articulation(runtime.world, articulations, now=runtime.world.clock())
+                    carried = self._carry_moved_parts(task_id, runtime, articulations, found["entities"])
                     self._intake_phase = "INTAKE_OBSERVING"
-                    seeded = await seed_observations(runtime, visibility["visible"])
+                    seeded = await seed_observations(runtime, visibility["visible"]+carried)
                     log.info(f"task {task_id}: poses observed for {seeded['observed']}"
                              + (f"; skipped {seeded['skipped']}" if seeded["skipped"] else ""))
                     self._intake_phase = "INTAKE_NORMALIZING_GOAL"

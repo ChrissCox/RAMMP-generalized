@@ -63,6 +63,9 @@ class GroundedScene:
         self.latest = None
         self.sent = deque(maxlen=32)                    # capture IDs already shown to the model
         self.entities = {}
+        # Parts not seen now that an earlier task left moved: their measured poses stand, carried by the
+        # backend to where the part was left (sheppy_backend._moved_part_pose). Set per task by intake.
+        self.carried = {}
         self.reasoner = None
         self.world = None
         self._last_pair = None
@@ -392,6 +395,7 @@ class GroundedScene:
                                                            "pose_roles": [], "geometry": None, "grasp": None, "keyframe": None,
                                                            "box": None, "confidence": 0., "seen_at": None, "grounding": None,
                                                            "kind": "free_object", "attached_to": "", "camera_pose": None, "aliases": []})
+            self.carried.pop(entity_id, None)            # seen again: measured where it is now
             if candidate["label"] != record["label"] and candidate["label"] not in record.setdefault("aliases", []):
                 record["aliases"].append(candidate["label"])
             record.update(position_m=None if position is None else position.tolist(),
@@ -577,8 +581,11 @@ class GroundedScene:
                 raise BackendFailure("no_detection", check["detail"])
             data["carried"] = check
         else:
-            reused = record["geometry"] is not None and (record["keyframe"] == keyframe.capture_id
+            carried = self.carried.get(entity_id)
+            reused = record["geometry"] is not None and (record["keyframe"] == keyframe.capture_id or carried is not None
                                                          or self._still_there(record, keyframe))
+            if carried is not None:
+                data["carried"] = dict(carried)
             if not reused:
                 if self.reasoner is None:
                     raise BackendFailure("no_detection", "no reasoner is bound; the entity cannot be re-grounded")
@@ -612,6 +619,21 @@ class GroundedScene:
                               for role in grasp["roles"])
         return ObservationMeasurement(entity_id, self.camera_role, purpose, evidence_id, captured_at, self.pose_validity_s,
                                       tuple(assertions), data, dependencies, metric_poses=poses)
+
+    def left_its_place(self, entity_id):
+        """Whether the current keyframe shows the entity gone from where it was measured: {"gone", "detail"}.
+
+        Gone means the depth there is not the entity's any more (farther, or none); out of view or unmeasured
+        is not gone, only unknown.
+        """
+        with self._lock:
+            record = self.entities.get(entity_id)
+        keyframe = self.current_keyframe()
+        if record is None or keyframe is None:
+            return {"gone": False, "detail": "no measurement or no fresh keyframe to compare"}
+        check = self._carried(record, keyframe)
+        unknown = check["consistent"] or check.get("pixel") is None and "no depth" not in check["detail"]
+        return {"gone": not unknown, "detail": check["detail"] or "still where it was measured"}
 
     def _still_there(self, record, keyframe):
         """Measured from the same camera pose and the depth under its box unchanged: the measurement stands, no cloud call."""

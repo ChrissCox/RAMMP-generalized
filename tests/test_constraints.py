@@ -95,6 +95,24 @@ class MetricConstraintTests(unittest.TestCase):
         rec["attempts"] = [attempt("push", .58), attempt("pull", .30)]
         self.assertEqual(settled_motion(rec)["opening"], "push")                # otherwise the first that moved it
 
+    def test_a_part_left_moved_is_remembered_with_its_mechanism_and_one_left_shut_is_not(self):
+        from rammp_adl.constraints import left_moved
+        rec = record()
+        self.assertIsNone(left_moved(rec))
+        mechanism = {"pivot_base": [.8, .1, .4], "axis_base": [0., 0., 1.], "direction": -1.,
+                     "reference": {"tool_m": [.6, .2, .4], "at": 0.}}
+        record_attempt(rec, task_id="t-open", target=1.57, achieved=1.2, status="tripped")
+        self.assertIsNone(left_moved(rec))                                      # moved, but on no recorded mechanism
+        record_attempt(rec, task_id="t-open", target=1.57, achieved=1.57, status="succeeded", mechanism=mechanism)
+        left = left_moved(rec)
+        self.assertEqual(left["at"], 1.57)
+        self.assertEqual(left["task_id"], "t-open")
+        self.assertEqual(left["pivot_base"], [.8, .1, .4])
+        self.assertEqual(left["reference"], {"tool_m": [.6, .2, .4], "at": 0.})
+        self.assertNotIn("mechanism", history_summary(rec)[-1])                # the model is not shown the numbers
+        record_attempt(rec, task_id="t-close", target=0., achieved=.01, status="succeeded", mechanism=mechanism)
+        self.assertIsNone(left_moved(rec))                                      # closed again: nothing to carry
+
     def test_width_refinement_reads_only_attempts_made_the_same_way(self):
         rec = record()
         record_attempt(rec, task_id="t1", target=1., achieved=.15, status="tripped", detail="contact")
