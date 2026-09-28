@@ -172,6 +172,12 @@ class GroundedSceneTests(unittest.TestCase):
         self.assertTrue(place["gone"], place)
         self.assertIn("differs", place["detail"])
         self.assertEqual(self.scene.left_its_place("never_seen")["gone"], False)    # unknown is not gone
+        self.now = MONO+40.05                                                    # a still scene selected nothing since
+        self.assertIsNone(self.scene.current_keyframe())
+        self.clock.note(STAMP+40_000_000_000, MONO+40.02)
+        self.scene._last_pair = synthetic_pair(render(self.scene.pose, []), capture_id="cap-4",
+                                               stamp_ns=STAMP+40_000_000_000, receipt=MONO+40.02)
+        self.assertTrue(self.scene.left_its_place("small_box_1")["gone"])      # a keyframe is taken from the newest capture
         # Intake marks it carried: the pose measured before it moved stands, for the backend to carry, without a cloud call.
         self.scene.carried["small_box_1"] = {"constraint_id": "box_constraint", "at": .9, "unit": "rad"}
         measurement = asyncio.run(self.scene({"entity_id": "small_box_1", "camera": "wrist", "purpose": "pose"}, self.execution_context(world)))

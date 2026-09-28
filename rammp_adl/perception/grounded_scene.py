@@ -628,9 +628,12 @@ class GroundedScene:
         """
         with self._lock:
             record = self.entities.get(entity_id)
-        keyframe = self.current_keyframe()
-        if record is None or keyframe is None:
-            return {"gone": False, "detail": "no measurement or no fresh keyframe to compare"}
+        if record is None:
+            return {"gone": False, "detail": "never measured"}
+        try:
+            keyframe = self.keyframe_for_request()      # a still scene selects no new keyframe: take one now (nothing leaves)
+        except SceneError as exc:
+            return {"gone": False, "detail": f"no fresh keyframe to compare: {exc}"}
         check = self._carried(record, keyframe)
         unknown = check["consistent"] or check.get("pixel") is None and "no depth" not in check["detail"]
         return {"gone": not unknown, "detail": check["detail"] or "still where it was measured"}
